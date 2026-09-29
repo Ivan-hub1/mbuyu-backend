@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════
+// QUOTE REQUESTS
+// ═══════════════════════════════════════════
+
+enum QuoteStatus {
+  NEW
+  REVIEWING
+  QUOTED
+  ACCEPTED
+  REJECTED
+}
+
+model Quote {
+  id        String      @id @default(cuid())
+  reference String      @unique @default(cuid())
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  status    QuoteStatus @default(NEW)
+
+  // Contact
+  fullName         String
+  companyName      String?
+  email            String
+  phone            String
+  preferredContact String
+
+  // Shipment
+  cargoType          String
+  transportMode      String
+  weightKg           String
+  volumeCbm          String?
+  pieces             String
+  cargoDescription   String
+  cargoValue         String?
+  cargoValueCurrency String?
+
+  // Route
+  originCountry      String
+  originCity         String
+  destinationCountry String
+  destinationCity    String
+  shippingDate       String
+  incoterms          String
+
+  // Extras
+  specialRequirements String?
+  hasDocuments        Boolean @default(false)
+
+  // Admin response
+  quotedAmount   String?
+  quotedCurrency String?
+  adminResponse  String?
+  respondedAt    DateTime?
+
+  @@index([status])
+  @@index([createdAt])
+}
