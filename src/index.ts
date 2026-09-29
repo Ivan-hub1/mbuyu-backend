@@ -10,6 +10,9 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'http://localhost:5174',
+    'https://app.mbuyucfl.com',
+    'https://mbuyucfl.com',
+    'https://www.mbuyucfl.com',
   ],
   credentials: true,
 }));
