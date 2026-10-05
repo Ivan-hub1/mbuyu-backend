@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { requireAuth, requireRole } from '../middleware/auth';
+import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -20,7 +20,7 @@ const createUserSchema = z.object({
 });
 
 // ─── POST /api/admin/users — create a new user ────────────
-router.post('/users', async (req, res) => {
+router.post('/users', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = createUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -33,7 +33,6 @@ router.post('/users', async (req, res) => {
     const { name, email, password, phone, role } = parsed.data;
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Check if email exists
     const existing = await prisma.user.findUnique({
       where: { email: normalizedEmail },
     });
@@ -41,10 +40,8 @@ router.post('/users', async (req, res) => {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
     const user = await prisma.user.create({
       data: {
         name,
@@ -72,7 +69,7 @@ router.post('/users', async (req, res) => {
 });
 
 // ─── GET /api/admin/users — list all users ────────────────
-router.get('/users', async (_req, res) => {
+router.get('/users', async (_req: AuthRequest, res: Response) => {
   try {
     const users = await prisma.user.findMany({
       select: {
@@ -94,7 +91,7 @@ router.get('/users', async (_req, res) => {
 });
 
 // ─── PATCH /api/admin/users/:id — update a user ───────────
-router.patch('/users/:id', async (req, res) => {
+router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { role, isActive, name, phone } = req.body;
@@ -126,11 +123,10 @@ router.patch('/users/:id', async (req, res) => {
 });
 
 // ─── DELETE /api/admin/users/:id — delete a user ──────────
-router.delete('/users/:id', async (req, res) => {
+router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Prevent self-deletion
     if (req.user?.userId === id) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
