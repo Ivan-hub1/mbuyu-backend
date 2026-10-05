@@ -6,11 +6,9 @@ import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// All admin routes require authentication + ADMIN role
 router.use(requireAuth);
 router.use(requireRole('ADMIN'));
 
-// ─── Validation ────────────────────────────────────────────
 const createUserSchema = z.object({
   name: z.string().min(2, 'Name too short'),
   email: z.string().email('Invalid email'),
@@ -19,15 +17,16 @@ const createUserSchema = z.object({
   role: z.enum(['STAFF', 'ADMIN', 'CUSTOMER']),
 });
 
-// ─── POST /api/admin/users — create a new user ────────────
+// POST /api/admin/users
 router.post('/users', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = createUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
+      res.status(400).json({
         error: 'Validation failed',
         details: parsed.error.flatten().fieldErrors,
       });
+      return;
     }
 
     const { name, email, password, phone, role } = parsed.data;
@@ -37,7 +36,8 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
       where: { email: normalizedEmail },
     });
     if (existing) {
-      return res.status(409).json({ error: 'Email already registered' });
+      res.status(409).json({ error: 'Email already registered' });
+      return;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -68,7 +68,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── GET /api/admin/users — list all users ────────────────
+// GET /api/admin/users
 router.get('/users', async (_req: AuthRequest, res: Response) => {
   try {
     const users = await prisma.user.findMany({
@@ -90,10 +90,10 @@ router.get('/users', async (_req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── PATCH /api/admin/users/:id — update a user ───────────
+// PATCH /api/admin/users/:id
 router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { role, isActive, name, phone } = req.body;
 
     const user = await prisma.user.update({
@@ -122,13 +122,14 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── DELETE /api/admin/users/:id — delete a user ──────────
+// DELETE /api/admin/users/:id
 router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
 
     if (req.user?.userId === id) {
-      return res.status(400).json({ error: 'Cannot delete your own account' });
+      res.status(400).json({ error: 'Cannot delete your own account' });
+      return;
     }
 
     await prisma.user.delete({ where: { id } });
