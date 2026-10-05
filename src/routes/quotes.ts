@@ -1,9 +1,15 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import {
+  sendQuoteReceivedEmail,
+  sendNewQuoteAdminEmail,
+  sendQuoteResponseEmail,
+} from '../lib/email';
 
 const router = Router();
 
+// ─── Validation schema ────────────────────────────────────
 const quoteSchema = z.object({
   fullName: z.string().min(2),
   companyName: z.string().optional().nullable(),
@@ -31,6 +37,7 @@ const quoteSchema = z.object({
   hasDocuments: z.boolean().optional(),
 });
 
+// ─── POST /api/quotes — create a new quote request ────────
 router.post('/', async (req, res) => {
   try {
     const parsed = quoteSchema.safeParse(req.body);
@@ -77,6 +84,26 @@ router.post('/', async (req, res) => {
       },
     });
 
+    // ─── Send emails (non-blocking) ───────────────────────
+    // 1. Confirmation to customer
+    sendQuoteReceivedEmail(
+      quote.email,
+      quote.fullName,
+      quote.reference,
+      quote.originCountry,
+      quote.destinationCountry
+    ).catch((err) => console.error('[quote received email]', err));
+
+    // 2. Notification to admin
+    sendNewQuoteAdminEmail(
+      quote.reference,
+      quote.fullName,
+      quote.email,
+      quote.cargoType,
+      quote.originCountry,
+      quote.destinationCountry
+    ).catch((err) => console.error('[new quote admin email]', err));
+
     res.status(201).json(quote);
   } catch (err) {
     console.error('[POST /quotes]', err);
@@ -84,6 +111,7 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ─── GET /api/quotes — list all quotes ────────────────────
 router.get('/', async (req, res) => {
   try {
     const { status } = req.query;
@@ -98,6 +126,7 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ─── GET /api/quotes/:reference — public lookup ───────────
 router.get('/:reference', async (req, res) => {
   try {
     const quote = await prisma.quote.findUnique({
@@ -111,6 +140,7 @@ router.get('/:reference', async (req, res) => {
   }
 });
 
+// ─── PATCH /api/quotes/:id — admin responds ───────────────
 router.patch('/:id', async (req, res) => {
   try {
     const { status, quotedAmount, quotedCurrency, adminResponse } = req.body;
@@ -125,6 +155,22 @@ router.patch('/:id', async (req, res) => {
         ...(status === 'QUOTED' && { respondedAt: new Date() }),
       },
     });
+
+    // ─── Send quote response email (non-blocking) ─────────
+    if (
+      quote.status === 'QUOTED' &&
+      quote.quotedAmount &&
+      quote.adminResponse
+    ) {
+      sendQuoteResponseEmail(
+        quote.email,
+        quote.fullName,
+        quote.reference,
+        quote.quotedAmount,
+        quote.quotedCurrency || 'USD',
+        quote.adminResponse
+      ).catch((err) => console.error('[quote response email]', err));
+    }
 
     res.json(quote);
   } catch (err) {

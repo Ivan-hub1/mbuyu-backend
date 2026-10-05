@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { sendWelcomeEmail } from '../lib/email';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -67,6 +68,11 @@ router.post('/register', async (req, res) => {
     });
 
     const token = generateToken(user);
+
+    // Send welcome email (non-blocking — don't wait for it)
+    sendWelcomeEmail(user.email, user.name).catch((err) =>
+      console.error('[welcome email]', err)
+    );
 
     res.status(201).json({
       token,

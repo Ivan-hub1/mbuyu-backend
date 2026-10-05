@@ -3,12 +3,15 @@ import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { sendStaffInviteEmail } from '../lib/email';
 
 const router = Router();
 
+// All admin routes require authentication + ADMIN role
 router.use(requireAuth);
 router.use(requireRole('ADMIN'));
 
+// ─── Validation ────────────────────────────────────────────
 const createUserSchema = z.object({
   name: z.string().min(2, 'Name too short'),
   email: z.string().email('Invalid email'),
@@ -17,7 +20,7 @@ const createUserSchema = z.object({
   role: z.enum(['STAFF', 'ADMIN', 'CUSTOMER']),
 });
 
-// POST /api/admin/users
+// ─── POST /api/admin/users — create a new user ────────────
 router.post('/users', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = createUserSchema.safeParse(req.body);
@@ -32,6 +35,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
     const { name, email, password, phone, role } = parsed.data;
     const normalizedEmail = email.toLowerCase().trim();
 
+    // Check if email exists
     const existing = await prisma.user.findUnique({
       where: { email: normalizedEmail },
     });
@@ -40,8 +44,10 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Create user
     const user = await prisma.user.create({
       data: {
         name,
@@ -61,6 +67,11 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // Send staff invite email (non-blocking — includes temp password)
+    sendStaffInviteEmail(user.email, user.name, password, user.role).catch(
+      (err) => console.error('[staff invite email]', err)
+    );
+
     res.status(201).json({ user });
   } catch (err) {
     console.error('[POST /admin/users]', err);
@@ -68,7 +79,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// GET /api/admin/users
+// ─── GET /api/admin/users — list all users ────────────────
 router.get('/users', async (_req: AuthRequest, res: Response) => {
   try {
     const users = await prisma.user.findMany({
@@ -90,7 +101,7 @@ router.get('/users', async (_req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/admin/users/:id
+// ─── PATCH /api/admin/users/:id — update a user ───────────
 router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
@@ -122,7 +133,7 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /api/admin/users/:id
+// ─── DELETE /api/admin/users/:id — delete a user ──────────
 router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
