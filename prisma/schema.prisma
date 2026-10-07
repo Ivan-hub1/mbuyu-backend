@@ -8,7 +8,38 @@ datasource db {
 }
 
 // ═══════════════════════════════════════════
-// QUOTE REQUESTS
+// USERS
+// ═══════════════════════════════════════════
+
+enum Role {
+  CUSTOMER
+  STAFF
+  ADMIN
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  phone     String?
+  role      Role     @default(CUSTOMER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  shipmentsAsCustomer Shipment[]         @relation("CustomerShipments")
+  shipmentsAsStaff    Shipment[]         @relation("StaffShipments")
+  eventsCreated       ShipmentEvent[]    @relation("EventCreatedBy")
+  documentsUploaded   ShipmentDocument[] @relation("DocumentUploadedBy")
+
+  @@index([email])
+  @@index([role])
+}
+
+// ═══════════════════════════════════════════
+// QUOTES
 // ═══════════════════════════════════════════
 
 enum QuoteStatus {
@@ -61,30 +92,112 @@ model Quote {
   adminResponse  String?
   respondedAt    DateTime?
 
+  // Link to shipment (when quote is accepted and shipment is created)
+  shipmentId String?   @unique
+  shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
   @@index([status])
   @@index([createdAt])
 }
+
 // ═══════════════════════════════════════════
-// USERS
+// SHIPMENTS (Cargo Tracking)
 // ═══════════════════════════════════════════
 
-enum Role {
-  CUSTOMER
-  STAFF
-  ADMIN
+enum ShipmentStatus {
+  PENDING
+  PICKED_UP
+  IN_TRANSIT
+  AT_CUSTOMS
+  CUSTOMS_HOLD
+  CUSTOMS_CLEARED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  EXCEPTION
+  CANCELLED
 }
 
-model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  password     String
-  name         String
-  phone        String?
-  role         Role     @default(CUSTOMER)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model Shipment {
+  id             String  @id @default(cuid())
+  trackingNumber String  @unique
+  reference      String? // Optional customer PO/reference
 
-  @@index([email])
-  @@index([role])
+  // Customer
+  customerId    String?
+  customer      User?   @relation("CustomerShipments", fields: [customerId], references: [id], onDelete: SetNull)
+  customerName  String
+  customerEmail String
+  customerPhone String
+
+  // Staff assigned
+  assignedToId String?
+  assignedTo   User?   @relation("StaffShipments", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  // Cargo details
+  description String
+  cargoType   String
+  weightKg    String
+  volumeCbm   String?
+  pieces      String
+
+  // Route
+  originCountry      String
+  originCity         String
+  destinationCountry String
+  destinationCity    String
+
+  // Status
+  status ShipmentStatus @default(PENDING)
+
+  // Relations
+  events    ShipmentEvent[]
+  documents ShipmentDocument[]
+  quote     Quote?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([trackingNumber])
+  @@index([status])
+  @@index([customerId])
+  @@index([assignedToId])
+  @@index([createdAt])
+}
+
+model ShipmentEvent {
+  id         String @id @default(cuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  status   ShipmentStatus
+  location String
+  note     String?
+
+  createdById String?
+  createdBy   User?   @relation("EventCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([shipmentId])
+  @@index([createdAt])
+}
+
+model ShipmentDocument {
+  id         String @id @default(cuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  // File metadata
+  fileName String
+  fileUrl  String
+  fileSize Int
+  mimeType String
+
+  // Who uploaded
+  uploadedById String?
+  uploadedBy   User?   @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([shipmentId])
 }
