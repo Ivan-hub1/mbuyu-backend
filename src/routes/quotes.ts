@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
 import {
   sendQuoteReceivedEmail,
   sendNewQuoteAdminEmail,
@@ -37,7 +38,14 @@ const quoteSchema = z.object({
   hasDocuments: z.boolean().optional(),
 });
 
-// ─── POST /api/quotes — create a new quote request ────────
+const acceptQuoteSchema = z.object({
+  assignedToId: z.string().optional().nullable(),
+  weightKg: z.string().optional(),
+  volumeCbm: z.string().optional().nullable(),
+  pieces: z.string().optional(),
+});
+
+// ─── POST /api/quotes — create ────────────────────────────
 router.post('/', async (req, res) => {
   try {
     const parsed = quoteSchema.safeParse(req.body);
@@ -62,7 +70,6 @@ router.post('/', async (req, res) => {
         email: data.email,
         phone: data.phone,
         preferredContact: data.preferredContact,
-
         cargoType: data.cargoType,
         transportMode: data.transportMode,
         weightKg: data.weightKg,
@@ -71,21 +78,17 @@ router.post('/', async (req, res) => {
         cargoDescription: data.cargoDescription,
         cargoValue: data.cargoValue || null,
         cargoValueCurrency: data.cargoValueCurrency || null,
-
         originCountry: data.originCountry,
         originCity: data.originCity,
         destinationCountry: data.destinationCountry,
         destinationCity: data.destinationCity,
         shippingDate: data.shippingDate,
         incoterms: data.incoterms,
-
         specialRequirements: data.specialRequirements || null,
         hasDocuments: data.hasDocuments ?? false,
       },
     });
 
-    // ─── Send emails (non-blocking) ───────────────────────
-    // 1. Confirmation to customer
     sendQuoteReceivedEmail(
       quote.email,
       quote.fullName,
@@ -94,7 +97,6 @@ router.post('/', async (req, res) => {
       quote.destinationCountry
     ).catch((err) => console.error('[quote received email]', err));
 
-    // 2. Notification to admin
     sendNewQuoteAdminEmail(
       quote.reference,
       quote.fullName,
@@ -111,7 +113,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ─── GET /api/quotes — list all quotes ────────────────────
+// ─── GET /api/quotes — list all ───────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { status } = req.query;
@@ -130,7 +132,7 @@ router.get('/', async (req, res) => {
 router.get('/:reference', async (req, res) => {
   try {
     const quote = await prisma.quote.findUnique({
-      where: { reference: req.params.reference },
+      where: { reference: req.params.reference as string },
     });
     if (!quote) return res.status(404).json({ error: 'Quote not found' });
     res.json(quote);
@@ -146,7 +148,7 @@ router.patch('/:id', async (req, res) => {
     const { status, quotedAmount, quotedCurrency, adminResponse } = req.body;
 
     const quote = await prisma.quote.update({
-      where: { id: req.params.id },
+      where: { id: req.params.id as string },
       data: {
         ...(status && { status }),
         ...(quotedAmount !== undefined && { quotedAmount }),
@@ -156,7 +158,6 @@ router.patch('/:id', async (req, res) => {
       },
     });
 
-    // ─── Send quote response email (non-blocking) ─────────
     if (
       quote.status === 'QUOTED' &&
       quote.quotedAmount &&
@@ -178,5 +179,116 @@ router.patch('/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to update quote' });
   }
 });
+
+// ─── POST /api/quotes/:id/accept — accept + create shipment
+router.post(
+  '/:id/accept',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const quoteId = req.params.id as string;
+
+      const parsed = acceptQuoteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: 'Validation failed',
+          details: parsed.error.flatten().fieldErrors,
+        });
+        return;
+      }
+
+      const { assignedToId, weightKg, volumeCbm, pieces } = parsed.data;
+
+      const quote = await prisma.quote.findUnique({
+        where: { id: quoteId },
+      });
+      if (!quote) {
+        res.status(404).json({ error: 'Quote not found' });
+        return;
+      }
+
+      if (quote.shipmentId) {
+        res.status(400).json({ error: 'This quote already has a shipment' });
+        return;
+      }
+
+      if (assignedToId) {
+        const staffUser = await prisma.user.findUnique({
+          where: { id: assignedToId },
+        });
+        if (
+          !staffUser ||
+          (staffUser.role !== 'STAFF' && staffUser.role !== 'ADMIN')
+        ) {
+          res.status(400).json({ error: 'User is not a staff member' });
+          return;
+        }
+      }
+
+      // Generate tracking number
+      const year = new Date().getFullYear();
+      const prefix = `MBCFL-${year}-`;
+      const latest = await prisma.shipment.findFirst({
+        where: { trackingNumber: { startsWith: prefix } },
+        orderBy: { trackingNumber: 'desc' },
+      });
+      let nextNumber = 1;
+      if (latest) {
+        const parts = latest.trackingNumber.split('-');
+        const lastNum = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(lastNum)) nextNumber = lastNum + 1;
+      }
+      const trackingNumber = `${prefix}${String(nextNumber).padStart(5, '0')}`;
+
+      const shipment = await prisma.shipment.create({
+        data: {
+          trackingNumber,
+          reference: quote.reference,
+          customerName: quote.fullName,
+          customerEmail: quote.email,
+          customerPhone: quote.phone,
+          assignedToId: assignedToId || null,
+          description: quote.cargoDescription,
+          cargoType: quote.cargoType,
+          weightKg: weightKg || quote.weightKg,
+          volumeCbm: volumeCbm || quote.volumeCbm || null,
+          pieces: pieces || quote.pieces,
+          originCountry: quote.originCountry,
+          originCity: quote.originCity,
+          destinationCountry: quote.destinationCountry,
+          destinationCity: quote.destinationCity,
+          status: 'PENDING',
+          events: {
+            create: {
+              status: 'PENDING',
+              location: quote.originCity,
+              note: `Shipment created from quote ${quote.reference}`,
+              createdById: req.user!.userId,
+            },
+          },
+        },
+      });
+
+      await prisma.quote.update({
+        where: { id: quoteId },
+        data: {
+          shipmentId: shipment.id,
+          status: 'ACCEPTED',
+          respondedAt: new Date(),
+        },
+      });
+
+      res.status(201).json({
+        shipment,
+        trackingNumber,
+        message: 'Shipment created successfully',
+      });
+    } catch (err) {
+      console.error('[POST /quotes/:id/accept]', err);
+      res.status(500).json({ error: 'Failed to create shipment from quote' });
+    }
+  }
+);
 
 export default router;

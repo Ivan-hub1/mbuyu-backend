@@ -90,7 +90,7 @@ const createEventSchema = z.object({
 });
 
 // ═══════════════════════════════════════════════════════════
-// PUBLIC ROUTES (no auth required)
+// PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════
 
 // ─── GET /api/shipments/track/:trackingNumber ─────────────
@@ -99,7 +99,7 @@ router.get('/track/:trackingNumber', async (req, res) => {
     const { trackingNumber } = req.params;
 
     const shipment = await prisma.shipment.findUnique({
-      where: { trackingNumber },
+      where: { trackingNumber: trackingNumber as string },
       include: {
         events: {
           orderBy: { createdAt: 'desc' },
@@ -269,8 +269,10 @@ router.get('/', requireRole('ADMIN'), async (req: AuthRequest, res: Response) =>
 // ─── GET /api/shipments/:id — admin/staff view one ────────
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
+    const id = req.params.id as string;
+
     const shipment = await prisma.shipment.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       include: {
         events: {
           orderBy: { createdAt: 'desc' },
@@ -316,6 +318,8 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 // ─── PATCH /api/shipments/:id — admin updates ─────────────
 router.patch('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
+    const id = req.params.id as string;
+
     const parsed = updateShipmentSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -328,7 +332,7 @@ router.patch('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respons
     const data = parsed.data;
 
     const shipment = await prisma.shipment.update({
-      where: { id: req.params.id },
+      where: { id },
       data: {
         ...(data.customerName !== undefined && { customerName: data.customerName }),
         ...(data.customerEmail !== undefined && { customerEmail: data.customerEmail }),
@@ -357,6 +361,7 @@ router.patch('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respons
 // ─── PATCH /api/shipments/:id/assign — admin assigns staff
 router.patch('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
+    const id = req.params.id as string;
     const { assignedToId } = req.body;
 
     if (assignedToId) {
@@ -370,7 +375,7 @@ router.patch('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res: 
     }
 
     const shipment = await prisma.shipment.update({
-      where: { id: req.params.id },
+      where: { id },
       data: { assignedToId: assignedToId || null },
       include: {
         assignedTo: { select: { id: true, name: true, email: true } },
@@ -399,7 +404,8 @@ router.patch('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res: 
 // ─── DELETE /api/shipments/:id — admin deletes ────────────
 router.delete('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
-    await prisma.shipment.delete({ where: { id: req.params.id } });
+    const id = req.params.id as string;
+    await prisma.shipment.delete({ where: { id } });
     res.json({ ok: true });
   } catch (err) {
     console.error('[DELETE /shipments/:id]', err);
@@ -408,7 +414,7 @@ router.delete('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respon
 });
 
 // ═══════════════════════════════════════════════════════════
-// EVENT ROUTES (status updates / timeline)
+// EVENT ROUTES
 // ═══════════════════════════════════════════════════════════
 
 // ─── POST /api/shipments/:id/events — add event ───────────
@@ -417,6 +423,8 @@ router.post(
   requireRole('ADMIN', 'STAFF'),
   async (req: AuthRequest, res: Response) => {
     try {
+      const id = req.params.id as string;
+
       const parsed = createEventSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({
@@ -429,7 +437,7 @@ router.post(
       const { status, location, note } = parsed.data;
 
       const shipment = await prisma.shipment.findUnique({
-        where: { id: req.params.id },
+        where: { id },
       });
       if (!shipment) {
         res.status(404).json({ error: 'Shipment not found' });
@@ -475,8 +483,10 @@ router.post(
 // ─── GET /api/shipments/:id/events — timeline ─────────────
 router.get('/:id/events', async (req: AuthRequest, res: Response) => {
   try {
+    const id = req.params.id as string;
+
     const shipment = await prisma.shipment.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       select: { id: true, assignedToId: true },
     });
     if (!shipment) {
