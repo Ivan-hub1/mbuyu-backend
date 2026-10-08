@@ -92,6 +92,11 @@ model Quote {
   adminResponse  String?
   respondedAt    DateTime?
 
+  // Tax (NEW)
+  taxName   String?
+  taxRate   String?
+  taxAmount String?
+
   // Link to shipment (when quote is accepted and shipment is created)
   shipmentId String?   @unique
   shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)

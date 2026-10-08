@@ -157,7 +157,7 @@ router.get('/track/:trackingNumber', async (req, res) => {
 
 router.use(requireAuth);
 
-// ─── GET /api/shipments/mine — staff assignments ──────────
+// ─── GET /api/shipments/mine — staff's assigned shipments ─
 router.get('/mine', async (req: AuthRequest, res: Response) => {
   try {
     const shipments = await prisma.shipment.findMany({
@@ -172,6 +172,23 @@ router.get('/mine', async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[GET /shipments/mine]', err);
     res.status(500).json({ error: 'Failed to fetch assignments' });
+  }
+});
+
+// ─── GET /api/shipments/my — customer's own shipments ─────
+router.get('/my', async (req: AuthRequest, res: Response) => {
+  try {
+    const shipments = await prisma.shipment.findMany({
+      where: { customerEmail: req.user!.email },
+      include: {
+        events: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    res.json(shipments);
+  } catch (err) {
+    console.error('[GET /shipments/my]', err);
+    res.status(500).json({ error: 'Failed to fetch your shipments' });
   }
 });
 

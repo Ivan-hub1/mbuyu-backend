@@ -7,10 +7,11 @@ import {
   sendNewQuoteAdminEmail,
   sendQuoteResponseEmail,
 } from '../lib/email';
+import { generateQuotePdf } from '../lib/quotePdf';
 
 const router = Router();
 
-// ─── Validation schema ────────────────────────────────────
+// ─── Validation schemas ───────────────────────────────────
 const quoteSchema = z.object({
   fullName: z.string().min(2),
   companyName: z.string().optional().nullable(),
@@ -45,7 +46,7 @@ const acceptQuoteSchema = z.object({
   pieces: z.string().optional(),
 });
 
-// ─── POST /api/quotes — create ────────────────────────────
+// ─── POST /api/quotes — create a new quote request ────────
 router.post('/', async (req, res) => {
   try {
     const parsed = quoteSchema.safeParse(req.body);
@@ -70,6 +71,7 @@ router.post('/', async (req, res) => {
         email: data.email,
         phone: data.phone,
         preferredContact: data.preferredContact,
+
         cargoType: data.cargoType,
         transportMode: data.transportMode,
         weightKg: data.weightKg,
@@ -78,12 +80,14 @@ router.post('/', async (req, res) => {
         cargoDescription: data.cargoDescription,
         cargoValue: data.cargoValue || null,
         cargoValueCurrency: data.cargoValueCurrency || null,
+
         originCountry: data.originCountry,
         originCity: data.originCity,
         destinationCountry: data.destinationCountry,
         destinationCity: data.destinationCity,
         shippingDate: data.shippingDate,
         incoterms: data.incoterms,
+
         specialRequirements: data.specialRequirements || null,
         hasDocuments: data.hasDocuments ?? false,
       },
@@ -113,12 +117,10 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ─── GET /api/quotes — list all ───────────────────────────
-router.get('/', async (req, res) => {
+// ─── GET /api/quotes — list all quotes (admin) ────────────
+router.get('/', async (_req, res) => {
   try {
-    const { status } = req.query;
     const quotes = await prisma.quote.findMany({
-      where: status ? { status: status as any } : undefined,
       orderBy: { createdAt: 'desc' },
     });
     res.json(quotes);
@@ -128,55 +130,17 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ─── GET /api/quotes/:reference — public lookup ───────────
-router.get('/:reference', async (req, res) => {
+// ─── GET /api/quotes/mine — current user's own quotes ─────
+router.get('/mine', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const quote = await prisma.quote.findUnique({
-      where: { reference: req.params.reference as string },
+    const quotes = await prisma.quote.findMany({
+      where: { email: req.user!.email },
+      orderBy: { createdAt: 'desc' },
     });
-    if (!quote) return res.status(404).json({ error: 'Quote not found' });
-    res.json(quote);
+    res.json(quotes);
   } catch (err) {
-    console.error('[GET /quotes/:ref]', err);
-    res.status(500).json({ error: 'Failed to fetch quote' });
-  }
-});
-
-// ─── PATCH /api/quotes/:id — admin responds ───────────────
-router.patch('/:id', async (req, res) => {
-  try {
-    const { status, quotedAmount, quotedCurrency, adminResponse } = req.body;
-
-    const quote = await prisma.quote.update({
-      where: { id: req.params.id as string },
-      data: {
-        ...(status && { status }),
-        ...(quotedAmount !== undefined && { quotedAmount }),
-        ...(quotedCurrency !== undefined && { quotedCurrency }),
-        ...(adminResponse !== undefined && { adminResponse }),
-        ...(status === 'QUOTED' && { respondedAt: new Date() }),
-      },
-    });
-
-    if (
-      quote.status === 'QUOTED' &&
-      quote.quotedAmount &&
-      quote.adminResponse
-    ) {
-      sendQuoteResponseEmail(
-        quote.email,
-        quote.fullName,
-        quote.reference,
-        quote.quotedAmount,
-        quote.quotedCurrency || 'USD',
-        quote.adminResponse
-      ).catch((err) => console.error('[quote response email]', err));
-    }
-
-    res.json(quote);
-  } catch (err) {
-    console.error('[PATCH /quotes/:id]', err);
-    res.status(500).json({ error: 'Failed to update quote' });
+    console.error('[GET /quotes/mine]', err);
+    res.status(500).json({ error: 'Failed to fetch your quotes' });
   }
 });
 
@@ -290,5 +254,98 @@ router.post(
     }
   }
 );
+
+// ─── GET /api/quotes/:id/pdf — download branded PDF ───────
+router.get(
+  '/:id/pdf',
+  requireAuth,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const quote = await prisma.quote.findUnique({
+        where: { id: req.params.id as string },
+      });
+
+      if (!quote) {
+        res.status(404).json({ error: 'Quote not found' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="Quote-${quote.reference}.pdf"`
+      );
+
+      const pdfStream = generateQuotePdf(quote);
+      pdfStream.pipe(res);
+    } catch (err) {
+      console.error('[GET /quotes/:id/pdf]', err);
+      res.status(500).json({ error: 'Failed to generate PDF' });
+    }
+  }
+);
+
+// ─── GET /api/quotes/:reference — public lookup ───────────
+router.get('/:reference', async (req, res) => {
+  try {
+    const quote = await prisma.quote.findUnique({
+      where: { reference: req.params.reference as string },
+    });
+    if (!quote) return res.status(404).json({ error: 'Quote not found' });
+    res.json(quote);
+  } catch (err) {
+    console.error('[GET /quotes/:ref]', err);
+    res.status(500).json({ error: 'Failed to fetch quote' });
+  }
+});
+
+// ─── PATCH /api/quotes/:id — admin responds (WITH TAX) ────
+router.patch('/:id', async (req, res) => {
+  try {
+    const {
+      status,
+      quotedAmount,
+      quotedCurrency,
+      adminResponse,
+      taxName,
+      taxRate,
+      taxAmount,
+    } = req.body;
+
+    const quote = await prisma.quote.update({
+      where: { id: req.params.id as string },
+      data: {
+        ...(status && { status }),
+        ...(quotedAmount !== undefined && { quotedAmount }),
+        ...(quotedCurrency !== undefined && { quotedCurrency }),
+        ...(adminResponse !== undefined && { adminResponse }),
+        ...(taxName !== undefined && { taxName }),
+        ...(taxRate !== undefined && { taxRate }),
+        ...(taxAmount !== undefined && { taxAmount }),
+        ...(status === 'QUOTED' && { respondedAt: new Date() }),
+      },
+    });
+
+    if (
+      quote.status === 'QUOTED' &&
+      quote.quotedAmount &&
+      quote.adminResponse
+    ) {
+      sendQuoteResponseEmail(
+        quote.email,
+        quote.fullName,
+        quote.reference,
+        quote.quotedAmount,
+        quote.quotedCurrency || 'USD',
+        quote.adminResponse
+      ).catch((err) => console.error('[quote response email]', err));
+    }
+
+    res.json(quote);
+  } catch (err) {
+    console.error('[PATCH /quotes/:id]', err);
+    res.status(500).json({ error: 'Failed to update quote' });
+  }
+});
 
 export default router;
