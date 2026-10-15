@@ -7,14 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ═══════════════════════════════════════════
-// USERS
-// ═══════════════════════════════════════════
-
 enum Role {
   CUSTOMER
   STAFF
   ADMIN
+}
+
+enum StaffRole {
+  HEAD_OFFICE
+  DRIVER
+  OPERATIONS
 }
 
 model User {
@@ -28,19 +30,23 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
+  staffRole StaffRole?
+
   shipmentsAsCustomer Shipment[]         @relation("CustomerShipments")
   shipmentsAsStaff    Shipment[]         @relation("StaffShipments")
   eventsCreated       ShipmentEvent[]    @relation("EventCreatedBy")
   documentsUploaded   ShipmentDocument[] @relation("DocumentUploadedBy")
 
+  checklistsAsDriver   Checklist[]         @relation("DriverChecklists")
+  journeysAsDriver     Journey[]           @relation("DriverJourneys")
+  maintenanceAssigned  MaintenanceTicket[] @relation("MaintenanceAssigned")
+  maintenanceStarted   MaintenanceTicket[] @relation("MaintenanceStarted")
+  journeyEventsCreated JourneyEvent[]      @relation("JourneyEventCreator")
+
   @@index([email])
   @@index([role])
+  @@index([staffRole])
 }
-
-// ═══════════════════════════════════════════
-// QUOTES
-// ═══════════════════════════════════════════
 
 enum QuoteStatus {
   NEW
@@ -57,14 +63,12 @@ model Quote {
   updatedAt DateTime    @updatedAt
   status    QuoteStatus @default(NEW)
 
-  // Contact
   fullName         String
   companyName      String?
   email            String
   phone            String
   preferredContact String
 
-  // Shipment
   cargoType          String
   transportMode      String
   weightKg           String
@@ -74,7 +78,6 @@ model Quote {
   cargoValue         String?
   cargoValueCurrency String?
 
-  // Route
   originCountry      String
   originCity         String
   destinationCountry String
@@ -82,32 +85,24 @@ model Quote {
   shippingDate       String
   incoterms          String
 
-  // Extras
   specialRequirements String?
   hasDocuments        Boolean @default(false)
 
-  // Admin response
   quotedAmount   String?
   quotedCurrency String?
   adminResponse  String?
   respondedAt    DateTime?
 
-  // Tax (NEW)
   taxName   String?
   taxRate   String?
   taxAmount String?
 
-  // Link to shipment (when quote is accepted and shipment is created)
   shipmentId String?   @unique
   shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([createdAt])
 }
-
-// ═══════════════════════════════════════════
-// SHIPMENTS (Cargo Tracking)
-// ═══════════════════════════════════════════
 
 enum ShipmentStatus {
   PENDING
@@ -125,39 +120,34 @@ enum ShipmentStatus {
 model Shipment {
   id             String  @id @default(cuid())
   trackingNumber String  @unique
-  reference      String? // Optional customer PO/reference
+  reference      String?
 
-  // Customer
   customerId    String?
   customer      User?   @relation("CustomerShipments", fields: [customerId], references: [id], onDelete: SetNull)
   customerName  String
   customerEmail String
   customerPhone String
 
-  // Staff assigned
   assignedToId String?
   assignedTo   User?   @relation("StaffShipments", fields: [assignedToId], references: [id], onDelete: SetNull)
 
-  // Cargo details
   description String
   cargoType   String
   weightKg    String
   volumeCbm   String?
   pieces      String
 
-  // Route
   originCountry      String
   originCity         String
   destinationCountry String
   destinationCity    String
 
-  // Status
   status ShipmentStatus @default(PENDING)
 
-  // Relations
   events    ShipmentEvent[]
   documents ShipmentDocument[]
   quote     Quote?
+  journeys  Journey[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -192,17 +182,193 @@ model ShipmentDocument {
   shipmentId String
   shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
-  // File metadata
   fileName String
   fileUrl  String
   fileSize Int
   mimeType String
 
-  // Who uploaded
   uploadedById String?
   uploadedBy   User?   @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
 
   @@index([shipmentId])
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  ON_TRIP
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+model Vehicle {
+  id       String        @id @default(cuid())
+  plate    String        @unique
+  type     String
+  capacity String?
+  status   VehicleStatus @default(AVAILABLE)
+
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  checklists Checklist[]
+  journeys   Journey[]
+
+  @@index([plate])
+  @@index([status])
+}
+
+enum ChecklistStatus {
+  SUBMITTED
+  FLAGGED
+  UNDER_REPAIR
+  CLEARED
+  APPROVED
+}
+
+model Checklist {
+  id       String @id @default(cuid())
+  driverId String
+  driver   User   @relation("DriverChecklists", fields: [driverId], references: [id], onDelete: Cascade)
+
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id])
+
+  driverName         String
+  driverPermitNo     String
+  driverPermitClass  String
+  driverPermitExpiry DateTime
+
+  oilOk     Boolean
+  waterOk   Boolean
+  tyresOk   Boolean
+  brakesOk  Boolean
+  engineOk  Boolean
+  lightsOk  Boolean
+  hornOk    Boolean
+  mirrorsOk Boolean
+  bodyOk    Boolean
+
+  issuesNotes String?
+
+  status ChecklistStatus @default(SUBMITTED)
+
+  maintenanceTickets MaintenanceTicket[]
+  journey            Journey?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([driverId])
+  @@index([vehicleId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model MaintenanceTicket {
+  id          String @id @default(cuid())
+  checklistId String
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  issue  String
+  status MaintenanceStatus @default(OPEN)
+
+  assignedToId String?
+  assignedTo   User?   @relation("MaintenanceAssigned", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  // Who actually started the repair
+  startedById String?
+  startedBy   User?   @relation("MaintenanceStarted", fields: [startedById], references: [id], onDelete: SetNull)
+  startedAt   DateTime?
+
+  // Real-time camera photos (base64 data URLs)
+  // "Before" photo taken on site before touching the vehicle
+  photoBefore       String?
+  photoBeforeTakenAt DateTime?
+
+  // "After" photo taken on site after repair is complete
+  photoAfter        String?
+  photoAfterTakenAt DateTime?
+
+  resolutionNote String?
+  resolvedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([assignedToId])
+  @@index([checklistId])
+}
+
+enum JourneyStatus {
+  NOT_STARTED
+  IN_TRANSIT
+  COMPLETED
+  ABORTED
+}
+
+model Journey {
+  id       String @id @default(cuid())
+  driverId String
+  driver   User   @relation("DriverJourneys", fields: [driverId], references: [id], onDelete: Cascade)
+
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id])
+
+  checklistId String?    @unique
+  checklist   Checklist? @relation(fields: [checklistId], references: [id], onDelete: SetNull)
+
+  shipmentId String?
+  shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  status JourneyStatus @default(NOT_STARTED)
+  isPaused Boolean @default(false)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  events JourneyEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([driverId])
+  @@index([vehicleId])
+  @@index([status])
+  @@index([shipmentId])
+  @@index([createdAt])
+  @@index([isPaused])
+}
+
+model JourneyEvent {
+  id        String @id @default(cuid())
+  journeyId String
+  journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  type String
+
+  lat Float
+  lng Float
+
+  locationName String?
+  note         String?
+
+  createdById String
+  createdBy   User   @relation("JourneyEventCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([journeyId])
+  @@index([createdAt])
 }

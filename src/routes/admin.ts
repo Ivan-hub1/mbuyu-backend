@@ -18,6 +18,10 @@ const createUserSchema = z.object({
   password: z.string().min(6, 'Password must be at least 6 characters'),
   phone: z.string().optional(),
   role: z.enum(['STAFF', 'ADMIN', 'CUSTOMER']),
+  staffRole: z
+    .enum(['HEAD_OFFICE', 'DRIVER', 'OPERATIONS'])
+    .optional()
+    .nullable(),
 });
 
 // ─── POST /api/admin/users — create a new user ────────────
@@ -32,8 +36,12 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const { name, email, password, phone, role } = parsed.data;
+    const { name, email, password, phone, role, staffRole } = parsed.data;
     const normalizedEmail = email.toLowerCase().trim();
+
+    // Only STAFF role can carry a staffRole
+    const normalizedStaffRole =
+      role === 'STAFF' && staffRole ? staffRole : null;
 
     // Check if email exists
     const existing = await prisma.user.findUnique({
@@ -55,6 +63,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
         password: hashedPassword,
         phone: phone || null,
         role,
+        staffRole: normalizedStaffRole,
       },
       select: {
         id: true,
@@ -62,6 +71,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
         name: true,
         phone: true,
         role: true,
+        staffRole: true,
         isActive: true,
         createdAt: true,
       },
@@ -89,6 +99,7 @@ router.get('/users', async (_req: AuthRequest, res: Response) => {
         name: true,
         phone: true,
         role: true,
+        staffRole: true,
         isActive: true,
         createdAt: true,
       },
@@ -105,7 +116,7 @@ router.get('/users', async (_req: AuthRequest, res: Response) => {
 router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { role, isActive, name, phone } = req.body;
+    const { role, isActive, name, phone, staffRole } = req.body;
 
     const user = await prisma.user.update({
       where: { id },
@@ -114,6 +125,9 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
         ...(isActive !== undefined && { isActive }),
         ...(name !== undefined && { name }),
         ...(phone !== undefined && { phone }),
+        ...(staffRole !== undefined && {
+          staffRole: role === 'STAFF' || staffRole !== null ? staffRole : null,
+        }),
       },
       select: {
         id: true,
@@ -121,6 +135,7 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
         name: true,
         phone: true,
         role: true,
+        staffRole: true,
         isActive: true,
         createdAt: true,
       },

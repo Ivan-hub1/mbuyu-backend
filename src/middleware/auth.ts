@@ -8,6 +8,7 @@ export interface AuthRequest extends Request {
     userId: string;
     email: string;
     role: string;
+    staffRole?: string | null;
   };
 }
 
@@ -28,6 +29,7 @@ export function requireAuth(
       userId: string;
       email: string;
       role: string;
+      staffRole?: string | null;
     };
     req.user = payload;
     next();
@@ -36,7 +38,7 @@ export function requireAuth(
   }
 }
 
-// Require a specific role (or roles)
+// Require a specific top-level role (or roles)
 export function requireRole(...roles: string[]) {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
@@ -44,6 +46,26 @@ export function requireRole(...roles: string[]) {
     }
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    next();
+  };
+}
+
+// Require a specific staff sub-role (DRIVER, OPERATIONS, HEAD_OFFICE).
+// ADMIN bypasses the check.
+export function requireStaffRole(...staffRoles: string[]) {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    if (req.user.role !== 'STAFF' && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Staff access required' });
+    }
+    if (req.user.role === 'ADMIN') return next();
+    if (!req.user.staffRole || !staffRoles.includes(req.user.staffRole)) {
+      return res
+        .status(403)
+        .json({ error: 'Insufficient staff permissions' });
     }
     next();
   };

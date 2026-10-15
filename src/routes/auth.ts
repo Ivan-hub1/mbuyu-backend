@@ -1,20 +1,22 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { sendWelcomeEmail } from '../lib/email';
+import { requireAuth, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const JWT_EXPIRES_IN = '7d';
 
-// ─── Validation schemas ───────────────────────────────────
+// ─── Validation schemas ────────────────────────────────────
 const registerSchema = z.object({
-  name: z.string().min(2, 'Name too short'),
-  email: z.string().email('Invalid email'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  phone: z.string().optional(),
+  email: z.string().email(),
+  password: z.string().min(6),
+  name: z.string().min(2),
+  phone: z.string().optional().nullable(),
+  role: z.enum(['CUSTOMER', 'STAFF', 'ADMIN']).optional(),
+  staffRole: z.enum(['HEAD_OFFICE', 'DRIVER', 'OPERATIONS']).optional().nullable(),
 });
 
 const loginSchema = z.object({
@@ -22,66 +24,99 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-// ─── Helper: generate JWT ─────────────────────────────────
-function generateToken(user: { id: string; email: string; role: string }) {
+// ─── Token helper ──────────────────────────────────────────
+function signToken(user: {
+  id: string;
+  email: string;
+  role: string;
+  staffRole: string | null;
+}) {
   return jwt.sign(
-    { userId: user.id, email: user.email, role: user.role },
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      staffRole: user.staffRole ?? null,
+    },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
 }
+
+// ─── Shape a user for API responses (no password) ──────────
+function publicUser(user: {
+  id: string;
+  email: string;
+  name: string;
+  phone: string | null;
+  role: string;
+  staffRole: string | null;
+  isActive: boolean;
+  createdAt: Date;
+}) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    phone: user.phone,
+    role: user.role,
+    staffRole: user.staffRole,
+    isActive: user.isActive,
+    createdAt: user.createdAt,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// PUBLIC ROUTES
+// ═══════════════════════════════════════════════════════════
 
 // ─── POST /api/auth/register ──────────────────────────────
 router.post('/register', async (req, res) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
+      res.status(400).json({
         error: 'Validation failed',
         details: parsed.error.flatten().fieldErrors,
       });
+      return;
     }
 
-    const { name, email, password, phone } = parsed.data;
-    const normalizedEmail = email.toLowerCase().trim();
+    const { email, password, name, phone, role, staffRole } = parsed.data;
 
-    // Check if email exists
-    const existing = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
+    const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      return res.status(409).json({ error: 'Email already registered' });
+      res.status(409).json({ error: 'Email already registered' });
+      return;
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
+    // Only allow STAFF role to carry a staffRole value
+    const normalizedStaffRole =
+      role === 'STAFF' && staffRole ? staffRole : null;
+
     const user = await prisma.user.create({
       data: {
-        name,
-        email: normalizedEmail,
+        email,
         password: hashedPassword,
+        name,
         phone: phone || null,
-        role: 'CUSTOMER',
+        role: role || 'CUSTOMER',
+        staffRole: normalizedStaffRole,
       },
     });
 
-    const token = generateToken(user);
-
-    // Send welcome email (non-blocking — don't wait for it)
-    sendWelcomeEmail(user.email, user.name).catch((err) =>
-      console.error('[welcome email]', err)
-    );
+    const token = signToken({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      staffRole: user.staffRole,
+    });
 
     res.status(201).json({
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error('[POST /auth/register]', err);
@@ -94,41 +129,42 @@ router.post('/login', async (req, res) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      res.status(400).json({
+        error: 'Validation failed',
+        details: parsed.error.flatten().fieldErrors,
+      });
+      return;
     }
 
     const { email, password } = parsed.data;
-    const normalizedEmail = email.toLowerCase().trim();
 
-    // Find user
-    const user = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
+    const user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      res.status(401).json({ error: 'Invalid email or password' });
+      return;
     }
 
-    // Check active
     if (!user.isActive) {
-      return res.status(403).json({ error: 'Account disabled' });
+      res.status(403).json({ error: 'Account is disabled' });
+      return;
     }
 
-    // Verify password
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+    const passwordOk = await bcrypt.compare(password, user.password);
+    if (!passwordOk) {
+      res.status(401).json({ error: 'Invalid email or password' });
+      return;
     }
 
-    const token = generateToken(user);
+    const token = signToken({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      staffRole: user.staffRole,
+    });
 
     res.json({
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error('[POST /auth/login]', err);
@@ -136,42 +172,25 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ─── GET /api/auth/me ─────────────────────────────────────
-router.get('/me', async (req, res) => {
+// ═══════════════════════════════════════════════════════════
+// AUTHENTICATED ROUTES
+// ═══════════════════════════════════════════════════════════
+router.use(requireAuth);
+
+// ─── GET /api/auth/me — current user ──────────────────────
+router.get('/me', async (req: AuthRequest, res: Response) => {
   try {
-    const header = req.headers.authorization;
-    if (!header?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token' });
-    }
-
-    const token = header.slice(7);
-    const payload = jwt.verify(token, JWT_SECRET) as {
-      userId: string;
-      email: string;
-      role: string;
-    };
-
     const user = await prisma.user.findUnique({
-      where: { id: payload.userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-      },
+      where: { id: req.user!.userId },
     });
-
-    if (!user || !user.isActive) {
-      return res.status(401).json({ error: 'User not found' });
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
     }
-
-    res.json({ user });
+    res.json(publicUser(user));
   } catch (err) {
     console.error('[GET /auth/me]', err);
-    res.status(401).json({ error: 'Invalid or expired token' });
+    res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
 
