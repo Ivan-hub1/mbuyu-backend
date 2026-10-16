@@ -36,7 +36,7 @@ model User {
 
   staffRole StaffRole?
 
-  // ─── Customer compliance fields (NEW) ───
+  // Customer compliance fields
   companyName           String?
   tinNumber             String?
   ninNumber             String?
@@ -44,10 +44,10 @@ model User {
   address               String?
   city                  String?
   country               String?
-  registrationCompleted Boolean @default(true) // true for staff/admin; false for invited customers
-  documentUrl           String? // Path to uploaded ID document
+  registrationCompleted Boolean @default(true)
+  documentUrl           String?
 
-  // ─── Relations ───
+  // Relations
   shipmentsAsCustomer Shipment[]         @relation("CustomerShipments")
   shipmentsAsStaff    Shipment[]         @relation("StaffShipments")
   eventsCreated       ShipmentEvent[]    @relation("EventCreatedBy")
@@ -60,6 +60,10 @@ model User {
   journeyEventsCreated JourneyEvent[]      @relation("JourneyEventCreator")
 
   quotesAsCustomer     Quote[]             @relation("CustomerQuotes")
+
+  transfersInitiated   ShipmentTransfer[]  @relation("TransferInitiatedBy")
+  transfersAsOldDriver ShipmentTransfer[]  @relation("TransferOldDriver")
+  transfersAsNewDriver ShipmentTransfer[]  @relation("TransferNewDriver")
 
   @@index([email])
   @@index([role])
@@ -85,14 +89,12 @@ model Quote {
   updatedAt DateTime    @updatedAt
   status    QuoteStatus @default(NEW)
 
-  // Contact
   fullName         String
   companyName      String?
   email            String
   phone            String
   preferredContact String
 
-  // Shipment
   cargoType          String
   transportMode      String
   weightKg           String
@@ -102,7 +104,6 @@ model Quote {
   cargoValue         String?
   cargoValueCurrency String?
 
-  // Route
   originCountry      String
   originCity         String
   destinationCountry String
@@ -110,31 +111,25 @@ model Quote {
   shippingDate       String
   incoterms          String
 
-  // Extras
   specialRequirements String?
   hasDocuments        Boolean @default(false)
 
-  // Admin response
   quotedAmount   String?
   quotedCurrency String?
   adminResponse  String?
   respondedAt    DateTime?
 
-  // Tax
   taxName   String?
   taxRate   String?
   taxAmount String?
 
-  // Link to shipment
   shipmentId String?   @unique
   shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
-  // ─── Registration invite (for public quote requestors) ───
   inviteToken       String?   @unique
   inviteTokenSentAt DateTime?
   inviteUsedAt      DateTime?
 
-  // ─── Linked customer account (once registered) ───
   customerId String?
   customer   User?   @relation("CustomerQuotes", fields: [customerId], references: [id], onDelete: SetNull)
 
@@ -193,6 +188,8 @@ model Shipment {
   documents ShipmentDocument[]
   quote     Quote?
   journeys  Journey[]
+
+  transfers ShipmentTransfer[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -357,11 +354,16 @@ model MaintenanceTicket {
   @@index([checklistId])
 }
 
+// ═══════════════════════════════════════════
+// JOURNEYS
+// ═══════════════════════════════════════════
+
 enum JourneyStatus {
   NOT_STARTED
   IN_TRANSIT
   COMPLETED
   ABORTED
+  TRANSFERRED
 }
 
 model Journey {
@@ -384,7 +386,16 @@ model Journey {
   startedAt   DateTime?
   completedAt DateTime?
 
+  // Transfer chain: which journey did this one come from, and where did it go
+  transferredFromId String?  @unique
+  transferredFrom   Journey? @relation("JourneyTransferChain", fields: [transferredFromId], references: [id], onDelete: SetNull)
+  transferredTo     Journey? @relation("JourneyTransferChain")
+
   events JourneyEvent[]
+
+  // Audit records for this journey's transfers
+  transfersAsOld ShipmentTransfer[] @relation("TransferOldJourney")
+  transfersAsNew ShipmentTransfer[] @relation("TransferNewJourney")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -402,6 +413,7 @@ model JourneyEvent {
   journeyId String
   journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
 
+  // STARTED | CHECKPOINT | STOP | INCIDENT | UPDATE | RESUMED | ENDED | TRANSFERRED
   type String
 
   lat Float
@@ -416,5 +428,78 @@ model JourneyEvent {
   createdAt DateTime @default(now())
 
   @@index([journeyId])
+  @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════
+// SHIPMENT TRANSFERS (NEW)
+// ═══════════════════════════════════════════
+
+enum TransferReason {
+  BREAKDOWN
+  ACCIDENT
+  SECURITY_INCIDENT
+  DRIVER_FATIGUE
+  DRIVER_UNAVAILABLE
+  ROUTE_BLOCKED
+  OTHER
+}
+
+enum CargoCondition {
+  INTACT
+  PARTIALLY_DAMAGED
+  MISSING_ITEMS
+  MAJOR_DAMAGE
+  UNKNOWN
+}
+
+model ShipmentTransfer {
+  id String @id @default(cuid())
+
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  oldJourneyId String
+  oldJourney   Journey @relation("TransferOldJourney", fields: [oldJourneyId], references: [id], onDelete: Cascade)
+
+  newJourneyId String?
+  newJourney   Journey? @relation("TransferNewJourney", fields: [newJourneyId], references: [id], onDelete: SetNull)
+
+  // Who did the transfer
+  initiatedById String
+  initiatedBy   User   @relation("TransferInitiatedBy", fields: [initiatedById], references: [id])
+
+  oldDriverId String
+  oldDriver   User   @relation("TransferOldDriver", fields: [oldDriverId], references: [id])
+
+  newDriverId String
+  newDriver   User   @relation("TransferNewDriver", fields: [newDriverId], references: [id])
+
+  newVehicleId String
+
+  // Details
+  reason      TransferReason
+  reasonNote  String?
+
+  // Cargo condition at handoff
+  cargoCondition CargoCondition @default(UNKNOWN)
+  cargoNotes     String?
+  missingItems   String?
+  damageNotes    String?
+
+  // Photos (JSON-encoded array of URLs)
+  photoUrls String?
+
+  // Where
+  lat          Float
+  lng          Float
+  locationName String?
+
+  createdAt DateTime @default(now())
+
+  @@index([shipmentId])
+  @@index([oldJourneyId])
+  @@index([newJourneyId])
+  @@index([newDriverId])
   @@index([createdAt])
 }

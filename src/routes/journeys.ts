@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireStaffRole, AuthRequest } from '../middleware/auth';
+import { sendTransferEmail } from '../lib/email';
 
 const router = Router();
 
@@ -17,6 +18,7 @@ function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// ─── Validation ────────────────────────────────────────────
 const startJourneySchema = z.object({
   vehicleId: z.string().min(1),
   checklistId: z.string().min(1),
@@ -35,6 +37,35 @@ const eventSchema = z.object({
   incidentReason: z.string().optional().nullable(),
   incidentSeverity: z.string().optional().nullable(),
   incidentDescription: z.string().optional().nullable(),
+});
+
+const transferSchema = z.object({
+  newDriverId: z.string().min(1),
+  newVehicleId: z.string().min(1),
+  reason: z.enum([
+    'BREAKDOWN',
+    'ACCIDENT',
+    'SECURITY_INCIDENT',
+    'DRIVER_FATIGUE',
+    'DRIVER_UNAVAILABLE',
+    'ROUTE_BLOCKED',
+    'OTHER',
+  ]),
+  reasonNote: z.string().optional().nullable(),
+  cargoCondition: z.enum([
+    'INTACT',
+    'PARTIALLY_DAMAGED',
+    'MISSING_ITEMS',
+    'MAJOR_DAMAGE',
+    'UNKNOWN',
+  ]),
+  cargoNotes: z.string().optional().nullable(),
+  missingItems: z.string().optional().nullable(),
+  damageNotes: z.string().optional().nullable(),
+  photoUrls: z.array(z.string()).optional().default([]),
+  lat: z.number(),
+  lng: z.number(),
+  locationName: z.string().optional().nullable(),
 });
 
 async function computeJourneyStats(journeyId: string) {
@@ -83,7 +114,216 @@ async function computeJourneyStats(journeyId: string) {
 
 router.use(requireAuth);
 
-// ─── POST /api/journeys ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// TRANSFER ENDPOINT
+// ═══════════════════════════════════════════════════════════
+
+// ─── POST /api/journeys/:id/transfer ──────────────────────
+// Roles: OPERATIONS, HEAD_OFFICE, ADMIN
+router.post(
+  '/:id/transfer',
+  requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const oldJourneyId = req.params.id as string;
+
+      const parsed = transferSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: 'Validation failed',
+          details: parsed.error.flatten().fieldErrors,
+        });
+        return;
+      }
+      const data = parsed.data;
+
+      // Load the old journey with its shipment
+      const oldJourney = await prisma.journey.findUnique({
+        where: { id: oldJourneyId },
+        include: { shipment: true },
+      });
+      if (!oldJourney) {
+        res.status(404).json({ error: 'Journey not found' });
+        return;
+      }
+      if (oldJourney.status !== 'IN_TRANSIT') {
+        res.status(400).json({
+          error: `Cannot transfer — journey status is ${oldJourney.status}`,
+        });
+        return;
+      }
+      if (!oldJourney.shipmentId) {
+        res.status(400).json({
+          error: 'This journey is not linked to a shipment',
+        });
+        return;
+      }
+
+      // Validate new driver
+      const newDriver = await prisma.user.findUnique({
+        where: { id: data.newDriverId },
+      });
+      if (!newDriver) {
+        res.status(404).json({ error: 'New driver not found' });
+        return;
+      }
+      if (
+        newDriver.role !== 'STAFF' ||
+        newDriver.staffRole !== 'DRIVER'
+      ) {
+        res.status(400).json({ error: 'Selected user is not a driver' });
+        return;
+      }
+      if (newDriver.id === oldJourney.driverId) {
+        res.status(400).json({
+          error: 'New driver must be different from the current driver',
+        });
+        return;
+      }
+
+      // Validate new vehicle
+      const newVehicle = await prisma.vehicle.findUnique({
+        where: { id: data.newVehicleId },
+      });
+      if (!newVehicle) {
+        res.status(404).json({ error: 'New vehicle not found' });
+        return;
+      }
+      if (newVehicle.status === 'OUT_OF_SERVICE') {
+        res.status(400).json({ error: 'Selected vehicle is out of service' });
+        return;
+      }
+      if (newVehicle.id === oldJourney.vehicleId) {
+        res.status(400).json({
+          error: 'New vehicle must be different from the current vehicle',
+        });
+        return;
+      }
+
+      // ─── Everything checks out — do the transfer ────────
+      const coords =
+        data.locationName ||
+        `${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`;
+
+      // 1. End the old journey
+      await prisma.journey.update({
+        where: { id: oldJourneyId },
+        data: {
+          status: 'TRANSFERRED',
+          completedAt: new Date(),
+          isPaused: false,
+        },
+      });
+
+      // 2. Log the transfer event on the old journey
+      await prisma.journeyEvent.create({
+        data: {
+          journeyId: oldJourneyId,
+          type: 'TRANSFERRED',
+          lat: data.lat,
+          lng: data.lng,
+          locationName: data.locationName || null,
+          note: `Journey transferred to ${newDriver.name} (${newVehicle.plate}). Reason: ${data.reason}${
+            data.reasonNote ? ' — ' + data.reasonNote : ''
+          }`,
+          createdById: req.user!.userId,
+        },
+      });
+
+      // 3. Free the old vehicle
+      await prisma.vehicle.update({
+        where: { id: oldJourney.vehicleId },
+        data: { status: 'AVAILABLE' },
+      });
+
+      // 4. Create the new journey (NOT_STARTED)
+      const newJourney = await prisma.journey.create({
+        data: {
+          driverId: newDriver.id,
+          vehicleId: newVehicle.id,
+          shipmentId: oldJourney.shipmentId,
+          status: 'NOT_STARTED',
+          transferredFromId: oldJourneyId,
+          events: {
+            create: {
+              type: 'UPDATE',
+              lat: data.lat,
+              lng: data.lng,
+              locationName: data.locationName || null,
+              note: `Shipment handed over from ${oldJourney.driverId} to ${newDriver.name}. Reason: ${data.reason}`,
+              createdById: req.user!.userId,
+            },
+          },
+        },
+      });
+
+      // 5. Create the transfer audit record
+      const transfer = await prisma.shipmentTransfer.create({
+        data: {
+          shipmentId: oldJourney.shipmentId,
+          oldJourneyId,
+          newJourneyId: newJourney.id,
+          initiatedById: req.user!.userId,
+          oldDriverId: oldJourney.driverId,
+          newDriverId: newDriver.id,
+          newVehicleId: newVehicle.id,
+          reason: data.reason,
+          reasonNote: data.reasonNote || null,
+          cargoCondition: data.cargoCondition,
+          cargoNotes: data.cargoNotes || null,
+          missingItems: data.missingItems || null,
+          damageNotes: data.damageNotes || null,
+          photoUrls: data.photoUrls.length ? JSON.stringify(data.photoUrls) : null,
+          lat: data.lat,
+          lng: data.lng,
+          locationName: data.locationName || null,
+        },
+      });
+
+      // 6. Update the shipment timeline for the customer
+      await prisma.shipmentEvent.create({
+        data: {
+          shipmentId: oldJourney.shipmentId,
+          status: 'IN_TRANSIT',
+          location: coords,
+          note: `⚠️ Shipment transferred to a new vehicle at ${coords}. Reason: ${data.reason.replace(
+            /_/g,
+            ' '
+          )}. Cargo condition: ${data.cargoCondition.replace(
+            /_/g,
+            ' '
+          )}. The journey will resume shortly.`,
+          createdById: req.user!.userId,
+        },
+      });
+
+      // 7. Notify the new driver (fire and forget)
+      sendTransferEmail({
+        to: newDriver.email,
+        driverName: newDriver.name,
+        trackingNumber: oldJourney.shipment.trackingNumber,
+        vehiclePlate: newVehicle.plate,
+        locationName: coords,
+      }).catch((e) => console.error('[transfer email]', e));
+
+      res.status(201).json({
+        transfer,
+        oldJourneyId,
+        newJourneyId: newJourney.id,
+        message:
+          'Transfer complete. New driver must complete a fresh checklist before starting.',
+      });
+    } catch (err) {
+      console.error('[POST /journeys/:id/transfer]', err);
+      res.status(500).json({ error: 'Failed to transfer journey' });
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════
+// EXISTING JOURNEY ENDPOINTS
+// ═══════════════════════════════════════════════════════════
+
 router.post(
   '/',
   requireStaffRole('DRIVER'),
@@ -188,7 +428,6 @@ router.post(
   }
 );
 
-// ─── POST /api/journeys/:id/events ────────────────────────
 router.post(
   '/:id/events',
   requireStaffRole('DRIVER'),
@@ -358,9 +597,6 @@ router.post(
   }
 );
 
-// ═══════════════════════════════════════════════════════════
-// GET /api/journeys/live — full active journeys for admin map
-// ═══════════════════════════════════════════════════════════
 router.get(
   '/live',
   requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
@@ -369,9 +605,7 @@ router.get(
       const journeys = await prisma.journey.findMany({
         where: { status: 'IN_TRANSIT' },
         include: {
-          driver: {
-            select: { id: true, name: true, email: true, phone: true },
-          },
+          driver: { select: { id: true, name: true, email: true, phone: true } },
           vehicle: { select: { id: true, plate: true, type: true } },
           shipment: {
             select: {
@@ -389,12 +623,10 @@ router.get(
         orderBy: { startedAt: 'desc' },
       });
 
-      // Compute stats per journey + last event details
       const enriched = await Promise.all(
         journeys.map(async (j) => {
           const stats = await computeJourneyStats(j.id);
           const lastEvent = j.events[0] || null;
-
           return {
             id: j.id,
             status: j.status,
@@ -426,7 +658,6 @@ router.get(
   }
 );
 
-// ─── GET /api/journeys/:id/stats ──────────────────────────
 router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
@@ -457,7 +688,6 @@ router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── GET /api/journeys/mine ───────────────────────────────
 router.get(
   '/mine',
   requireStaffRole('DRIVER'),
@@ -482,7 +712,6 @@ router.get(
   }
 );
 
-// ─── GET /api/journeys/active ─────────────────────────────
 router.get(
   '/active',
   requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
@@ -506,7 +735,6 @@ router.get(
   }
 );
 
-// ─── GET /api/journeys ────────────────────────────────────
 router.get(
   '/',
   requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
@@ -535,7 +763,6 @@ router.get(
   }
 );
 
-// ─── GET /api/journeys/:id ────────────────────────────────
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
@@ -584,7 +811,6 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ─── GET /api/journeys/:id/timeline ───────────────────────
 router.get('/:id/timeline', async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;

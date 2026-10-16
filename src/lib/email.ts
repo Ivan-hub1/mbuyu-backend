@@ -32,7 +32,6 @@ async function sendMail(to: string | string[], subject: string, html: string) {
   }
 }
 
-// ─── Staff invite ──────────────────────────────────────────
 export async function sendStaffInviteEmail(
   email: string,
   name: string,
@@ -62,7 +61,6 @@ export async function sendStaffInviteEmail(
   );
 }
 
-// ─── Quote response + signup invite ───────────────────────
 export async function sendQuoteResponseEmail(opts: {
   to: string;
   fullName: string;
@@ -119,7 +117,6 @@ export async function sendQuoteResponseEmail(opts: {
   );
 }
 
-// ─── Checklist cleared ────────────────────────────────────
 export async function sendChecklistCleared(opts: {
   driverEmail: string;
   driverName: string;
@@ -144,7 +141,6 @@ export async function sendChecklistCleared(opts: {
   );
 }
 
-// ─── Maintenance alert ────────────────────────────────────
 export async function sendMaintenanceAlert(opts: {
   driverName: string;
   vehiclePlate: string;
@@ -178,6 +174,43 @@ export async function sendMaintenanceAlert(opts: {
           </a>
         </p>
         <p style="font-size:12px;color:#888;margin-top:30px;">Checklist ID: ${opts.checklistId}</p>
+      </div>
+    `
+  );
+}
+
+// ─── NEW: Transfer notification ───────────────────────────
+export async function sendTransferEmail(opts: {
+  to: string;
+  driverName: string;
+  trackingNumber: string;
+  vehiclePlate: string;
+  locationName: string;
+}) {
+  await sendMail(
+    opts.to,
+    `🚚 Shipment transferred to you — ${opts.trackingNumber}`,
+    `
+      <div style="font-family: Inter, Arial, sans-serif; max-width: 600px;">
+        <h2 style="color:#E85D04;">Shipment Transferred to You</h2>
+        <p>Hello ${opts.driverName},</p>
+        <p>A shipment has been transferred to you and requires your action:</p>
+        <p style="background:#fef5ec;padding:14px;border-radius:6px;border-left:4px solid #E85D04;">
+          <strong>Tracking number:</strong> ${opts.trackingNumber}<br>
+          <strong>Your assigned vehicle:</strong> ${opts.vehiclePlate}<br>
+          <strong>Handoff location:</strong> ${opts.locationName}
+        </p>
+        <p><strong>Next steps:</strong></p>
+        <ol>
+          <li>Complete a fresh pre-trip checklist for your vehicle</li>
+          <li>Open the journey from your driver portal</li>
+          <li>Start the journey to continue the delivery</li>
+        </ol>
+        <p style="margin-top:20px;">
+          <a href="${APP_URL}/driver/shipments" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;font-weight:bold;">
+            Open My Shipments
+          </a>
+        </p>
       </div>
     `
   );
