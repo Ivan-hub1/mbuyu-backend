@@ -13,10 +13,13 @@ import checklistsRouter from './routes/checklists';
 import maintenanceRouter from './routes/maintenance';
 import journeysRouter from './routes/journeys';
 import geocodeRouter from './routes/geocode';
+import statementsRouter from './routes/statements';
+import uploadsRouter from './routes/uploads';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// ─── CORS ──────────────────────────────────────────────────
 app.use(
   cors({
     origin: [
@@ -24,6 +27,8 @@ app.use(
       'http://localhost:5174',
       'http://localhost:5175',
       'http://localhost:5176',
+      'http://localhost:5177',
+      'http://localhost:5178',
       'https://app.mbuyucfl.com',
       'https://mbuyucfl.com',
       'https://www.mbuyucfl.com',
@@ -31,38 +36,51 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '1mb' }));
 
+// JSON body — 15MB allows base64-encoded document uploads
+app.use(express.json({ limit: '15mb' }));
+
+// ─── Health ────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'mbuyu-cfl-api',
     timestamp: new Date().toISOString(),
+    storage: process.env.CLOUDINARY_CLOUD_NAME ? 'cloudinary' : 'unconfigured',
   });
 });
 
+// ─── API routes ────────────────────────────────────────────
 app.use('/api/quotes', quotesRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/profile', profileRouter);
 app.use('/api/shipments', shipmentsRouter);
 app.use('/api/forex', forexRouter);
-
-// ─── Fleet Management ────────────────────────────────────
 app.use('/api/vehicles', vehiclesRouter);
 app.use('/api/checklists', checklistsRouter);
 app.use('/api/maintenance', maintenanceRouter);
 app.use('/api/journeys', journeysRouter);
 app.use('/api/geocode', geocodeRouter);
-
+app.use('/api/statements', statementsRouter);
+app.use('/api/uploads', uploadsRouter);
 app.use('/api', documentsRouter);
 
+// ─── 404 ───────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
+// ─── Start ─────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Mbuyu CFL API running on http://localhost:${PORT}`);
-  console.log(`   Health:      http://localhost:${PORT}/health`);
-  console.log(`   Geocode:     http://localhost:${PORT}/api/geocode/reverse?lat=..&lng=..`);
+  console.log(`   Health:     http://localhost:${PORT}/health`);
+  console.log(`   Uploads:    http://localhost:${PORT}/api/uploads/document`);
+  console.log(
+    `   Storage:    ${
+      process.env.CLOUDINARY_CLOUD_NAME
+        ? 'Cloudinary (' + process.env.CLOUDINARY_CLOUD_NAME + ')'
+        : 'NOT CONFIGURED — set CLOUDINARY_* env vars'
+    }`
+  );
 });

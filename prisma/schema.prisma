@@ -7,6 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ═══════════════════════════════════════════
+// USERS
+// ═══════════════════════════════════════════
+
 enum Role {
   CUSTOMER
   STAFF
@@ -32,6 +36,18 @@ model User {
 
   staffRole StaffRole?
 
+  // ─── Customer compliance fields (NEW) ───
+  companyName           String?
+  tinNumber             String?
+  ninNumber             String?
+  passportNumber        String?
+  address               String?
+  city                  String?
+  country               String?
+  registrationCompleted Boolean @default(true) // true for staff/admin; false for invited customers
+  documentUrl           String? // Path to uploaded ID document
+
+  // ─── Relations ───
   shipmentsAsCustomer Shipment[]         @relation("CustomerShipments")
   shipmentsAsStaff    Shipment[]         @relation("StaffShipments")
   eventsCreated       ShipmentEvent[]    @relation("EventCreatedBy")
@@ -43,10 +59,16 @@ model User {
   maintenanceStarted   MaintenanceTicket[] @relation("MaintenanceStarted")
   journeyEventsCreated JourneyEvent[]      @relation("JourneyEventCreator")
 
+  quotesAsCustomer     Quote[]             @relation("CustomerQuotes")
+
   @@index([email])
   @@index([role])
   @@index([staffRole])
 }
+
+// ═══════════════════════════════════════════
+// QUOTES
+// ═══════════════════════════════════════════
 
 enum QuoteStatus {
   NEW
@@ -63,12 +85,14 @@ model Quote {
   updatedAt DateTime    @updatedAt
   status    QuoteStatus @default(NEW)
 
+  // Contact
   fullName         String
   companyName      String?
   email            String
   phone            String
   preferredContact String
 
+  // Shipment
   cargoType          String
   transportMode      String
   weightKg           String
@@ -78,6 +102,7 @@ model Quote {
   cargoValue         String?
   cargoValueCurrency String?
 
+  // Route
   originCountry      String
   originCity         String
   destinationCountry String
@@ -85,24 +110,44 @@ model Quote {
   shippingDate       String
   incoterms          String
 
+  // Extras
   specialRequirements String?
   hasDocuments        Boolean @default(false)
 
+  // Admin response
   quotedAmount   String?
   quotedCurrency String?
   adminResponse  String?
   respondedAt    DateTime?
 
+  // Tax
   taxName   String?
   taxRate   String?
   taxAmount String?
 
+  // Link to shipment
   shipmentId String?   @unique
   shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
+  // ─── Registration invite (for public quote requestors) ───
+  inviteToken       String?   @unique
+  inviteTokenSentAt DateTime?
+  inviteUsedAt      DateTime?
+
+  // ─── Linked customer account (once registered) ───
+  customerId String?
+  customer   User?   @relation("CustomerQuotes", fields: [customerId], references: [id], onDelete: SetNull)
+
   @@index([status])
   @@index([createdAt])
+  @@index([email])
+  @@index([inviteToken])
+  @@index([customerId])
 }
+
+// ═══════════════════════════════════════════
+// SHIPMENTS
+// ═══════════════════════════════════════════
 
 enum ShipmentStatus {
   PENDING
@@ -155,6 +200,7 @@ model Shipment {
   @@index([trackingNumber])
   @@index([status])
   @@index([customerId])
+  @@index([customerEmail])
   @@index([assignedToId])
   @@index([createdAt])
 }
@@ -194,6 +240,10 @@ model ShipmentDocument {
 
   @@index([shipmentId])
 }
+
+// ═══════════════════════════════════════════
+// FLEET
+// ═══════════════════════════════════════════
 
 enum VehicleStatus {
   AVAILABLE
@@ -286,17 +336,13 @@ model MaintenanceTicket {
   assignedToId String?
   assignedTo   User?   @relation("MaintenanceAssigned", fields: [assignedToId], references: [id], onDelete: SetNull)
 
-  // Who actually started the repair
   startedById String?
   startedBy   User?   @relation("MaintenanceStarted", fields: [startedById], references: [id], onDelete: SetNull)
   startedAt   DateTime?
 
-  // Real-time camera photos (base64 data URLs)
-  // "Before" photo taken on site before touching the vehicle
-  photoBefore       String?
+  photoBefore        String?
   photoBeforeTakenAt DateTime?
 
-  // "After" photo taken on site after repair is complete
   photoAfter        String?
   photoAfterTakenAt DateTime?
 
@@ -332,8 +378,8 @@ model Journey {
   shipmentId String?
   shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
 
-  status JourneyStatus @default(NOT_STARTED)
-  isPaused Boolean @default(false)
+  status   JourneyStatus @default(NOT_STARTED)
+  isPaused Boolean       @default(false)
 
   startedAt   DateTime?
   completedAt DateTime?
