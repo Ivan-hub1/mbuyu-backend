@@ -301,7 +301,7 @@ router.post(
       sendTransferEmail({
         to: newDriver.email,
         driverName: newDriver.name,
-        trackingNumber: oldJourney.shipment.trackingNumber,
+        trackingNumber: oldJourney.shipment!.trackingNumber,
         vehiclePlate: newVehicle.plate,
         locationName: coords,
       }).catch((e) => console.error('[transfer email]', e));
