@@ -43,15 +43,10 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     });
 
     res.json(transfers);
-  } catch (err: any) {
-    console.error('[GET /transfers]', err);
-    res.status(500).json({
-      error: 'Failed to fetch transfers',
-      debug: err?.message || String(err),
-      code: err?.code || null,
-      meta: err?.meta || null,
-    });
-  }
+  } catch (err) {
+  console.error('[GET /transfers]', err);
+  res.status(500).json({ error: 'Failed to fetch transfers' });
+}
 });
 
 // ─── GET /api/transfers/shipment/:shipmentId ──────────────
