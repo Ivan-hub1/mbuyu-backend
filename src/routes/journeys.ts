@@ -115,11 +115,9 @@ async function computeJourneyStats(journeyId: string) {
 router.use(requireAuth);
 
 // ═══════════════════════════════════════════════════════════
-// TRANSFER ENDPOINT
+// TRANSFER
 // ═══════════════════════════════════════════════════════════
 
-// ─── POST /api/journeys/:id/transfer ──────────────────────
-// Roles: OPERATIONS, HEAD_OFFICE, ADMIN
 router.post(
   '/:id/transfer',
   requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
@@ -137,7 +135,6 @@ router.post(
       }
       const data = parsed.data;
 
-      // Load the old journey with its shipment
       const oldJourney = await prisma.journey.findUnique({
         where: { id: oldJourneyId },
         include: { shipment: true },
@@ -159,7 +156,6 @@ router.post(
         return;
       }
 
-      // Validate new driver
       const newDriver = await prisma.user.findUnique({
         where: { id: data.newDriverId },
       });
@@ -167,10 +163,7 @@ router.post(
         res.status(404).json({ error: 'New driver not found' });
         return;
       }
-      if (
-        newDriver.role !== 'STAFF' ||
-        newDriver.staffRole !== 'DRIVER'
-      ) {
+      if (newDriver.role !== 'STAFF' || newDriver.staffRole !== 'DRIVER') {
         res.status(400).json({ error: 'Selected user is not a driver' });
         return;
       }
@@ -181,7 +174,6 @@ router.post(
         return;
       }
 
-      // Validate new vehicle
       const newVehicle = await prisma.vehicle.findUnique({
         where: { id: data.newVehicleId },
       });
@@ -200,12 +192,10 @@ router.post(
         return;
       }
 
-      // ─── Everything checks out — do the transfer ────────
       const coords =
         data.locationName ||
         `${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`;
 
-      // 1. End the old journey
       await prisma.journey.update({
         where: { id: oldJourneyId },
         data: {
@@ -215,7 +205,6 @@ router.post(
         },
       });
 
-      // 2. Log the transfer event on the old journey
       await prisma.journeyEvent.create({
         data: {
           journeyId: oldJourneyId,
@@ -230,13 +219,11 @@ router.post(
         },
       });
 
-      // 3. Free the old vehicle
       await prisma.vehicle.update({
         where: { id: oldJourney.vehicleId },
         data: { status: 'AVAILABLE' },
       });
 
-      // 4. Create the new journey (NOT_STARTED)
       const newJourney = await prisma.journey.create({
         data: {
           driverId: newDriver.id,
@@ -257,7 +244,6 @@ router.post(
         },
       });
 
-      // 5. Create the transfer audit record
       const transfer = await prisma.shipmentTransfer.create({
         data: {
           shipmentId: oldJourney.shipmentId,
@@ -273,14 +259,15 @@ router.post(
           cargoNotes: data.cargoNotes || null,
           missingItems: data.missingItems || null,
           damageNotes: data.damageNotes || null,
-          photoUrls: data.photoUrls.length ? JSON.stringify(data.photoUrls) : null,
+          photoUrls: data.photoUrls.length
+            ? JSON.stringify(data.photoUrls)
+            : null,
           lat: data.lat,
           lng: data.lng,
           locationName: data.locationName || null,
         },
       });
 
-      // 6. Update the shipment timeline for the customer
       await prisma.shipmentEvent.create({
         data: {
           shipmentId: oldJourney.shipmentId,
@@ -297,7 +284,6 @@ router.post(
         },
       });
 
-      // 7. Notify the new driver (fire and forget)
       sendTransferEmail({
         to: newDriver.email,
         driverName: newDriver.name,
@@ -313,15 +299,20 @@ router.post(
         message:
           'Transfer complete. New driver must complete a fresh checklist before starting.',
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('[POST /journeys/:id/transfer]', err);
-      res.status(500).json({ error: 'Failed to transfer journey' });
+      res.status(500).json({
+        error: 'Failed to transfer journey',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
 
 // ═══════════════════════════════════════════════════════════
-// EXISTING JOURNEY ENDPOINTS
+// START JOURNEY
 // ═══════════════════════════════════════════════════════════
 
 router.post(
@@ -421,12 +412,21 @@ router.post(
       }
 
       res.status(201).json(journey);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[POST /journeys]', err);
-      res.status(500).json({ error: 'Failed to start journey' });
+      res.status(500).json({
+        error: 'Failed to start journey',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
+
+// ═══════════════════════════════════════════════════════════
+// EVENTS
+// ═══════════════════════════════════════════════════════════
 
 router.post(
   '/:id/events',
@@ -590,12 +590,21 @@ router.post(
         stats,
         isPaused: newIsPaused,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('[POST /journeys/:id/events]', err);
-      res.status(500).json({ error: 'Failed to record event' });
+      res.status(500).json({
+        error: 'Failed to record event',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
+
+// ═══════════════════════════════════════════════════════════
+// LIVE FEED
+// ═══════════════════════════════════════════════════════════
 
 router.get(
   '/live',
@@ -651,12 +660,21 @@ router.get(
       );
 
       res.json(enriched);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[GET /journeys/live]', err);
-      res.status(500).json({ error: 'Failed to fetch live journeys' });
+      res.status(500).json({
+        error: 'Failed to fetch live journeys',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
+
+// ═══════════════════════════════════════════════════════════
+// OTHER
+// ═══════════════════════════════════════════════════════════
 
 router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
   try {
@@ -682,9 +700,14 @@ router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
     }
     const stats = await computeJourneyStats(id);
     res.json(stats);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /journeys/:id/stats]', err);
-    res.status(500).json({ error: 'Failed to compute stats' });
+    res.status(500).json({
+      error: 'Failed to compute stats',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 
@@ -705,9 +728,14 @@ router.get(
         orderBy: { createdAt: 'desc' },
       });
       res.json(journeys);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[GET /journeys/mine]', err);
-      res.status(500).json({ error: 'Failed to fetch your journeys' });
+      res.status(500).json({
+        error: 'Failed to fetch your journeys',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
@@ -728,9 +756,14 @@ router.get(
         orderBy: { startedAt: 'desc' },
       });
       res.json(journeys);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[GET /journeys/active]', err);
-      res.status(500).json({ error: 'Failed to fetch active journeys' });
+      res.status(500).json({
+        error: 'Failed to fetch active journeys',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
@@ -756,9 +789,14 @@ router.get(
         orderBy: { createdAt: 'desc' },
       });
       res.json(journeys);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[GET /journeys]', err);
-      res.status(500).json({ error: 'Failed to fetch journeys' });
+      res.status(500).json({
+        error: 'Failed to fetch journeys',
+        debug: err?.message || String(err),
+        code: err?.code || null,
+        meta: err?.meta || null,
+      });
     }
   }
 );
@@ -805,9 +843,14 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     }
 
     res.json(journey);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /journeys/:id]', err);
-    res.status(500).json({ error: 'Failed to fetch journey' });
+    res.status(500).json({
+      error: 'Failed to fetch journey',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 
@@ -876,9 +919,14 @@ router.get('/:id/timeline', async (req: AuthRequest, res: Response) => {
       },
       events,
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /journeys/:id/timeline]', err);
-    res.status(500).json({ error: 'Failed to fetch timeline' });
+    res.status(500).json({
+      error: 'Failed to fetch timeline',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 

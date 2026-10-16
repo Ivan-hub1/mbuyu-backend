@@ -4,7 +4,6 @@ import { requireAuth, requireStaffRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// Roles allowed to view/manage transfers
 router.use(requireAuth);
 router.use(requireStaffRole('OPERATIONS', 'HEAD_OFFICE'));
 
@@ -44,9 +43,14 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     });
 
     res.json(transfers);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /transfers]', err);
-    res.status(500).json({ error: 'Failed to fetch transfers' });
+    res.status(500).json({
+      error: 'Failed to fetch transfers',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 
@@ -66,9 +70,14 @@ router.get('/shipment/:shipmentId', async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: 'asc' },
     });
     res.json(transfers);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /transfers/shipment/:shipmentId]', err);
-    res.status(500).json({ error: 'Failed to fetch shipment transfers' });
+    res.status(500).json({
+      error: 'Failed to fetch shipment transfers',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 
@@ -96,9 +105,14 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       return;
     }
     res.json(transfer);
-  } catch (err) {
+  } catch (err: any) {
     console.error('[GET /transfers/:id]', err);
-    res.status(500).json({ error: 'Failed to fetch transfer' });
+    res.status(500).json({
+      error: 'Failed to fetch transfer',
+      debug: err?.message || String(err),
+      code: err?.code || null,
+      meta: err?.meta || null,
+    });
   }
 });
 
