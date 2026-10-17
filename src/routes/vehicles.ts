@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
-import { prisma } from '../lib/prisma';
+import { prisma, isRecordNotFound } from '../lib/prisma';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
 
 const router = Router();
@@ -91,7 +91,7 @@ router.post('/', requireRole('ADMIN'), async (req: AuthRequest, res: Response) =
     }
     const data = parsed.data;
 
-    const existing = await prisma.vehicle.findUnique({ where: { plate: data.plate } });
+    const existing = await prisma.vehicle.findFirst({ where: { plate: data.plate } });
     if (existing) {
       res.status(409).json({ error: 'A vehicle with this plate already exists' });
       return;
@@ -141,6 +141,10 @@ router.patch('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respons
 
     res.json(vehicle);
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Vehicle not found' });
+      return;
+    }
     console.error('[PATCH /vehicles/:id]', err);
     res.status(500).json({ error: 'Failed to update vehicle' });
   }
@@ -153,6 +157,10 @@ router.delete('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respon
     await prisma.vehicle.delete({ where: { id } });
     res.json({ ok: true });
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Vehicle not found' });
+      return;
+    }
     console.error('[DELETE /vehicles/:id]', err);
     res.status(500).json({ error: 'Failed to delete vehicle' });
   }

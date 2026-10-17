@@ -1,8 +1,14 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
-import { prisma } from '../lib/prisma';
-import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { prisma, isRecordNotFound } from '../lib/prisma';
+import {
+  requireAuth,
+  requireRole,
+  invalidateSessions,
+  AuthRequest,
+} from '../middleware/auth';
+import { currentTenantId } from '../lib/tenantContext';
 import { sendStaffInviteEmail } from '../lib/email';
 
 const router = Router();
@@ -44,7 +50,7 @@ router.post('/users', async (req: AuthRequest, res: Response) => {
       role === 'STAFF' && staffRole ? staffRole : null;
 
     // Check if email exists
-    const existing = await prisma.user.findUnique({
+    const existing = await prisma.user.findFirst({
       where: { email: normalizedEmail },
     });
     if (existing) {
@@ -118,6 +124,12 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
     const id = req.params.id as string;
     const { role, isActive, name, phone, staffRole } = req.body;
 
+    // Company admins can never grant platform-level access.
+    if (role !== undefined && !['CUSTOMER', 'STAFF', 'ADMIN'].includes(role)) {
+      res.status(400).json({ error: 'Invalid role' });
+      return;
+    }
+
     const user = await prisma.user.update({
       where: { id },
       data: {
@@ -141,8 +153,13 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
       },
     });
 
+    invalidateSessions();
     res.json({ user });
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
     console.error('[PATCH /admin/users/:id]', err);
     res.status(500).json({ error: 'Failed to update user' });
   }
@@ -159,10 +176,63 @@ router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
     }
 
     await prisma.user.delete({ where: { id } });
+    invalidateSessions();
     res.json({ ok: true });
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
     console.error('[DELETE /admin/users/:id]', err);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// ─── Company settings (this admin's own tenant) ───────────
+const companySchema = z.object({
+  name: z.string().min(2).optional(),
+  tagline: z.string().optional().nullable(),
+  contactEmail: z.string().email().optional().nullable().or(z.literal('')),
+  contactPhone: z.string().optional().nullable(),
+  website: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+});
+
+// GET /api/admin/company
+router.get('/company', async (_req: AuthRequest, res: Response) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: currentTenantId() },
+    });
+    res.json(tenant);
+  } catch (err) {
+    console.error('[GET /admin/company]', err);
+    res.status(500).json({ error: 'Failed to fetch company' });
+  }
+});
+
+// PATCH /api/admin/company — name & contact details used on emails/PDFs
+router.patch('/company', async (req: AuthRequest, res: Response) => {
+  try {
+    const parsed = companySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'Validation failed',
+        details: parsed.error.flatten().fieldErrors,
+      });
+      return;
+    }
+    const data = Object.fromEntries(
+      Object.entries(parsed.data).map(([k, v]) => [k, v === '' ? null : v])
+    );
+    const tenant = await prisma.tenant.update({
+      where: { id: currentTenantId() },
+      data,
+    });
+    res.json(tenant);
+  } catch (err) {
+    console.error('[PATCH /admin/company]', err);
+    res.status(500).json({ error: 'Failed to update company' });
   }
 });
 

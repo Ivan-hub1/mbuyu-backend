@@ -1,14 +1,21 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
-import { prisma } from '../lib/prisma';
+import { prisma, isRecordNotFound } from '../lib/prisma';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
+import { currentTenantId, runAsSystem } from '../lib/tenantContext';
 
 const router = Router();
 
 // ─── Tracking number generator ────────────────────────────
+// Each company has its own unique prefix, so numbers never collide
+// across tenants and public tracking can look them up globally.
 async function generateTrackingNumber(): Promise<string> {
+  const tenant = await prisma.tenant.findUniqueOrThrow({
+    where: { id: currentTenantId() },
+    select: { trackingPrefix: true },
+  });
   const year = new Date().getFullYear();
-  const prefix = `MBCFL-${year}-`;
+  const prefix = `${tenant.trackingPrefix}-${year}-`;
 
   const latest = await prisma.shipment.findFirst({
     where: { trackingNumber: { startsWith: prefix } },
@@ -98,7 +105,8 @@ router.get('/track/:trackingNumber', async (req, res) => {
   try {
     const { trackingNumber } = req.params;
 
-    const shipment = await prisma.shipment.findUnique({
+    // Public and unauthenticated: tracking numbers are globally unique.
+    const shipment = await runAsSystem(() => prisma.shipment.findUnique({
       where: { trackingNumber: trackingNumber as string },
       include: {
         events: {
@@ -122,7 +130,7 @@ router.get('/track/:trackingNumber', async (req, res) => {
           },
         },
       },
-    });
+    }));
 
     if (!shipment) {
       res.status(404).json({ error: 'Tracking number not found' });
@@ -205,6 +213,23 @@ router.post('/', requireRole('ADMIN'), async (req: AuthRequest, res: Response) =
     }
 
     const data = parsed.data;
+
+    // Linked users must belong to this company (lookups are tenant-scoped).
+    if (data.customerId) {
+      const customer = await prisma.user.findUnique({ where: { id: data.customerId } });
+      if (!customer) {
+        res.status(400).json({ error: 'Customer not found' });
+        return;
+      }
+    }
+    if (data.assignedToId) {
+      const staff = await prisma.user.findUnique({ where: { id: data.assignedToId } });
+      if (!staff || (staff.role !== 'STAFF' && staff.role !== 'ADMIN')) {
+        res.status(400).json({ error: 'User is not a staff member' });
+        return;
+      }
+    }
+
     const trackingNumber = await generateTrackingNumber();
 
     const shipment = await prisma.shipment.create({
@@ -370,6 +395,10 @@ router.patch('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respons
 
     res.json(shipment);
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Shipment not found' });
+      return;
+    }
     console.error('[PATCH /shipments/:id]', err);
     res.status(500).json({ error: 'Failed to update shipment' });
   }
@@ -413,6 +442,10 @@ router.patch('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res: 
 
     res.json(shipment);
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Shipment not found' });
+      return;
+    }
     console.error('[PATCH /shipments/:id/assign]', err);
     res.status(500).json({ error: 'Failed to assign staff' });
   }
@@ -425,6 +458,10 @@ router.delete('/:id', requireRole('ADMIN'), async (req: AuthRequest, res: Respon
     await prisma.shipment.delete({ where: { id } });
     res.json({ ok: true });
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Shipment not found' });
+      return;
+    }
     console.error('[DELETE /shipments/:id]', err);
     res.status(500).json({ error: 'Failed to delete shipment' });
   }

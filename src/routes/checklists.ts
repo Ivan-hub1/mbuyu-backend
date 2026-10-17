@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, requireStaffRole, AuthRequest } from '../middleware/auth';
-import { sendMaintenanceAlert } from '../lib/mailer';
+import { sendMaintenanceAlert } from '../lib/email';
 
 const router = Router();
 
@@ -123,8 +123,21 @@ router.post(
           data: { status: 'MAINTENANCE' },
         });
 
+        // Alert this company's operations team (falls back to its admins)
+        const opsUsers = await prisma.user.findMany({
+          where: { isActive: true, role: 'STAFF', staffRole: 'OPERATIONS' },
+          select: { email: true },
+        });
+        const recipients = opsUsers.length
+          ? opsUsers
+          : await prisma.user.findMany({
+              where: { isActive: true, role: 'ADMIN' },
+              select: { email: true },
+            });
+
         // Fire-and-forget email — don't block the response
         sendMaintenanceAlert({
+          recipients: recipients.map((u) => u.email),
           driverName: data.driverName,
           vehiclePlate: vehicle.plate,
           checklistId: checklist.id,

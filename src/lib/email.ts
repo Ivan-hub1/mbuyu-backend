@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { currentBrand } from './brand';
 
 const SMTP_HOST = process.env.SMTP_HOST || 'mail.mbuyucfl.com';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
@@ -12,24 +13,45 @@ const transporter = nodemailer.createTransport({
   auth: { user: SMTP_USER, pass: SMTP_PASS },
 });
 
-const FROM = `"Mbuyu CFL" <${SMTP_USER}>`;
-const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
+export const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
 
-async function sendMail(to: string | string[], subject: string, html: string) {
+// Resolves true when sent, false when SMTP isn't configured; throws if the
+// SMTP server rejects it. Fire-and-forget callers must attach .catch().
+// The sender name is the current tenant's company name.
+export async function sendMail(
+  to: string | string[],
+  subject: string,
+  html: string
+): Promise<boolean> {
   if (!SMTP_PASS) {
     console.warn('[mailer] SMTP_PASS not set — skipping send:', subject);
-    return;
+    return false;
   }
-  try {
-    await transporter.sendMail({
-      from: FROM,
-      to: Array.isArray(to) ? to.join(',') : to,
-      subject,
-      html,
-    });
-  } catch (err) {
-    console.error('[mailer] send failed:', err);
-  }
+  const brand = await currentBrand();
+  await transporter.sendMail({
+    from: `"${brand.name}" <${SMTP_USER}>`,
+    to: Array.isArray(to) ? to.join(',') : to,
+    subject,
+    html,
+  });
+  return true;
+}
+
+function formatMoney(amount: number, currency?: string | null) {
+  return `${currency || 'USD'} ${amount.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function quoteTotal(opts: {
+  quotedAmount?: string | null;
+  quotedCurrency?: string | null;
+  taxAmount?: string | null;
+}) {
+  const sum =
+    parseFloat(opts.quotedAmount || '0') + parseFloat(opts.taxAmount || '0');
+  return sum ? formatMoney(sum, opts.quotedCurrency) : null;
 }
 
 export async function sendStaffInviteEmail(
@@ -38,14 +60,15 @@ export async function sendStaffInviteEmail(
   tempPassword: string,
   role: string
 ) {
-  await sendMail(
+  const b = await currentBrand();
+  return sendMail(
     email,
-    `Welcome to Mbuyu CFL — your ${role.toLowerCase()} account`,
+    `Welcome to ${b.name} — your ${role.toLowerCase()} account`,
     `
       <div style="font-family: Inter, Arial, sans-serif; max-width: 600px;">
-        <h2 style="color:#E85D04;">Welcome to Mbuyu CFL</h2>
+        <h2 style="color:#E85D04;">Welcome to ${b.name}</h2>
         <p>Hello ${name},</p>
-        <p>An account has been created for you on the Mbuyu CFL ${role.toLowerCase()} portal.</p>
+        <p>An account has been created for you on the ${b.name} ${role.toLowerCase()} portal.</p>
         <p style="background:#f4f4f4;padding:12px;border-radius:6px;">
           <strong>Email:</strong> ${email}<br>
           <strong>Temporary password:</strong> <code>${tempPassword}</code>
@@ -72,27 +95,19 @@ export async function sendQuoteResponseEmail(opts: {
   adminResponse?: string | null;
   inviteToken: string;
 }) {
-  const total = (() => {
-    const base = parseFloat(opts.quotedAmount || '0');
-    const tax = parseFloat(opts.taxAmount || '0');
-    const sum = base + tax;
-    if (!sum) return null;
-    return `${opts.quotedCurrency || 'USD'} ${sum.toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  })();
+  const b = await currentBrand();
+  const total = quoteTotal(opts);
 
   const signupUrl = `${APP_URL}/register/complete?token=${opts.inviteToken}`;
 
-  await sendMail(
+  return sendMail(
     opts.to,
-    `Your Mbuyu CFL quote ${opts.reference} is ready`,
+    `Your ${b.name} quote ${opts.reference} is ready`,
     `
       <div style="font-family: Inter, Arial, sans-serif; max-width: 600px;">
         <h2 style="color:#E85D04;">Your quote is ready</h2>
         <p>Hello ${opts.fullName},</p>
-        <p>Thank you for requesting a quote from Mbuyu CFL. We've reviewed your request and prepared a quotation:</p>
+        <p>Thank you for requesting a quote from ${b.name}. We've reviewed your request and prepared a quotation:</p>
         <p style="background:#fef5ec;padding:14px;border-radius:6px;border-left:4px solid #E85D04;">
           <strong>Reference:</strong> ${opts.reference}<br>
           ${total ? `<strong>Total amount:</strong> ${total}<br>` : ''}
@@ -117,13 +132,89 @@ export async function sendQuoteResponseEmail(opts: {
   );
 }
 
+export async function sendQuoteRejectedEmail(opts: {
+  to: string;
+  fullName: string;
+  reference: string;
+  adminResponse?: string | null;
+}) {
+  const b = await currentBrand();
+  return sendMail(
+    opts.to,
+    `Update on your ${b.name} quote ${opts.reference}`,
+    `
+      <div style="font-family: Inter, Arial, sans-serif; max-width: 600px;">
+        <h2 style="color:#E85D04;">Update on your quote request</h2>
+        <p>Hello ${opts.fullName},</p>
+        <p>Thank you for considering ${b.name}. Unfortunately we are unable to proceed with quote <strong>${opts.reference}</strong> at this time.</p>
+        ${
+          opts.adminResponse
+            ? `<p style="background:#f4f4f4;padding:14px;border-radius:6px;white-space:pre-wrap;">${opts.adminResponse}</p>`
+            : ''
+        }
+        <p>If your requirements change, we would be glad to prepare a new quote for you.</p>
+        <p style="margin-top:20px;">
+          <a href="${APP_URL}/quote" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
+            Request a new quote
+          </a>
+        </p>
+      </div>
+    `
+  );
+}
+
+export async function sendQuoteAcceptedEmail(opts: {
+  to: string;
+  fullName: string;
+  reference: string;
+  trackingNumber: string;
+  quotedAmount?: string | null;
+  quotedCurrency?: string | null;
+  taxName?: string | null;
+  taxAmount?: string | null;
+  // Present when the customer hasn't created their account yet
+  inviteToken?: string | null;
+}) {
+  const b = await currentBrand();
+  const total = quoteTotal(opts);
+  const trackUrl = `${APP_URL}/track/${encodeURIComponent(opts.trackingNumber)}`;
+
+  return sendMail(
+    opts.to,
+    `Your shipment is booked — tracking number ${opts.trackingNumber}`,
+    `
+      <div style="font-family: Inter, Arial, sans-serif; max-width: 600px;">
+        <h2 style="color:#E85D04;">Your shipment is booked</h2>
+        <p>Hello ${opts.fullName},</p>
+        <p>Your quote <strong>${opts.reference}</strong> has been accepted and your shipment with ${b.name} has been created.</p>
+        <p style="background:#fef5ec;padding:14px;border-radius:6px;border-left:4px solid #E85D04;">
+          <strong>Tracking number:</strong> ${opts.trackingNumber}<br>
+          ${total ? `<strong>Total amount:</strong> ${total}<br>` : ''}
+          ${opts.taxName && opts.taxAmount ? `<strong>${opts.taxName}:</strong> ${opts.quotedCurrency} ${opts.taxAmount}<br>` : ''}
+        </p>
+        <p style="margin-top:20px;">
+          <a href="${trackUrl}" style="background:#E85D04;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+            Track your shipment
+          </a>
+        </p>
+        ${
+          opts.inviteToken
+            ? `<p>Create your customer account to follow every update and download statements:
+                 <a href="${APP_URL}/register/complete?token=${opts.inviteToken}">create your account</a>.</p>`
+            : ''
+        }
+      </div>
+    `
+  );
+}
+
 export async function sendChecklistCleared(opts: {
   driverEmail: string;
   driverName: string;
   vehiclePlate: string;
   checklistId: string;
 }) {
-  await sendMail(
+  return sendMail(
     opts.driverEmail,
     `✅ Vehicle ${opts.vehiclePlate} cleared — you can start the journey`,
     `
@@ -142,22 +233,25 @@ export async function sendChecklistCleared(opts: {
 }
 
 export async function sendMaintenanceAlert(opts: {
+  // The company's own ops team; the env list is only a legacy default
+  recipients?: string[];
   driverName: string;
   vehiclePlate: string;
   checklistId: string;
   issues: string[];
   notes?: string | null;
 }) {
-  const recipients = (
-    process.env.MAINTENANCE_ALERT_EMAILS || 'operations@mbuyucfl.com'
-  )
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const recipients =
+    opts.recipients ??
+    (process.env.MAINTENANCE_ALERT_EMAILS || 'operations@mbuyucfl.com')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  if (recipients.length === 0) return false;
 
   const issuesList = opts.issues.map((i) => `<li>${i}</li>`).join('');
 
-  await sendMail(
+  return sendMail(
     recipients,
     `🚨 Vehicle issue flagged: ${opts.vehiclePlate}`,
     `
@@ -187,7 +281,7 @@ export async function sendTransferEmail(opts: {
   vehiclePlate: string;
   locationName: string;
 }) {
-  await sendMail(
+  return sendMail(
     opts.to,
     `🚚 Shipment transferred to you — ${opts.trackingNumber}`,
     `

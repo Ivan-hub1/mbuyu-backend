@@ -16,6 +16,7 @@ import geocodeRouter from './routes/geocode';
 import statementsRouter from './routes/statements';
 import uploadsRouter from './routes/uploads';
 import transfersRouter from './routes/transfers';
+import platformRouter from './routes/platform';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -62,6 +63,7 @@ app.use('/api/geocode', geocodeRouter);
 app.use('/api/statements', statementsRouter);
 app.use('/api/uploads', uploadsRouter);
 app.use('/api/transfers', transfersRouter);
+app.use('/api/platform', platformRouter);
 app.use('/api', documentsRouter);
 
 app.use((_req, res) => {

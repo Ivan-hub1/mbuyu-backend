@@ -2,20 +2,14 @@ import PDFDocument from 'pdfkit';
 import type { Quote } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
+import type { Brand } from './brand';
 
+// Colours only — company name and contact details come from the tenant (lib/brand.ts)
 const BRAND = {
-  name: 'Mbuyu CFL',
-  tagline: 'Freight & Logistics',
   orange: '#E87A2C',
   dark: '#111111',
   gray: '#666666',
   lightGray: '#EEEEEE',
-  contact: {
-    email: 'info@mbuyucfl.com',
-    phone: '+256 755 028392',
-    website: 'www.mbuyucfl.com',
-    address: 'Kampala, Uganda',
-  },
 };
 
 const LOGO_PATH = path.join(__dirname, '..', '..', 'assets', 'mbuyu-logo.png');
@@ -50,13 +44,13 @@ function money(amount: number, currency: string): string {
   })}`;
 }
 
-export function generateQuotePdf(quote: Quote): PDFKit.PDFDocument {
+export function generateQuotePdf(quote: Quote, brand: Brand): PDFKit.PDFDocument {
   const doc = new PDFDocument({
     size: 'A4',
     margin: 50,
     info: {
       Title: `Quotation ${quote.reference}`,
-      Author: BRAND.name,
+      Author: brand.name,
       Subject: 'Freight Quotation',
     },
   });
@@ -73,7 +67,7 @@ export function generateQuotePdf(quote: Quote): PDFKit.PDFDocument {
   const logoY = (HEADER_HEIGHT - logoSize) / 2;
   let textStartX = 50;
 
-  if (logoExists()) {
+  if (brand.useBundledLogo && logoExists()) {
     try {
       doc.image(LOGO_PATH, logoX, logoY, {
         fit: [logoSize, logoSize],
@@ -90,32 +84,32 @@ export function generateQuotePdf(quote: Quote): PDFKit.PDFDocument {
     .fillColor('#FFFFFF')
     .fontSize(20)
     .font('Helvetica-Bold')
-    .text(BRAND.name, textStartX, 28, { lineBreak: false });
+    .text(brand.name, textStartX, 28, { lineBreak: false });
 
   doc
     .fontSize(9)
     .font('Helvetica')
-    .text(BRAND.tagline, textStartX, 54, { lineBreak: false });
+    .text(brand.tagline, textStartX, 54, { lineBreak: false });
 
   doc
     .fontSize(9)
     .font('Helvetica')
-    .text(BRAND.contact.email, pageWidth - 250, 25, {
+    .text(brand.email, pageWidth - 250, 25, {
       width: 200,
       align: 'right',
       lineBreak: false,
     })
-    .text(BRAND.contact.phone, pageWidth - 250, 40, {
+    .text(brand.phone, pageWidth - 250, 40, {
       width: 200,
       align: 'right',
       lineBreak: false,
     })
-    .text(BRAND.contact.website, pageWidth - 250, 55, {
+    .text(brand.website, pageWidth - 250, 55, {
       width: 200,
       align: 'right',
       lineBreak: false,
     })
-    .text(BRAND.contact.address, pageWidth - 250, 70, {
+    .text(brand.address, pageWidth - 250, 70, {
       width: 200,
       align: 'right',
       lineBreak: false,
@@ -341,7 +335,7 @@ export function generateQuotePdf(quote: Quote): PDFKit.PDFDocument {
     'Payment terms: 50% deposit on booking, balance before delivery.',
     'Any additional customs duties, taxes, or port charges are the responsibility of the client.',
     'Insurance is not included unless explicitly stated.',
-    'Mbuyu CFL is not liable for delays caused by force majeure, customs, or carrier issues.',
+    `${brand.name} is not liable for delays caused by force majeure, customs, or carrier issues.`,
   ];
   for (const t of terms) {
     doc.text(`• ${t}`, 50, y, { width: contentWidth });
@@ -361,7 +355,7 @@ export function generateQuotePdf(quote: Quote): PDFKit.PDFDocument {
     .fontSize(8)
     .font('Helvetica')
     .text(
-      `${BRAND.name} · ${BRAND.contact.email} · ${BRAND.contact.phone} · ${BRAND.contact.address}`,
+      [brand.name, brand.email, brand.phone, brand.address].filter(Boolean).join(' · '),
       50,
       footerY + 12,
       { width: contentWidth, align: 'center' }

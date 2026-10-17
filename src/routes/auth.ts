@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { resolveTenant } from '../middleware/tenant';
+import { runAsSystem, runWithTenant } from '../lib/tenantContext';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -25,6 +27,9 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+  // Company code (tenant slug). Only needed when the same email + password
+  // exists in more than one company.
+  company: z.string().optional().nullable(),
 });
 
 const completeRegistrationSchema = z.object({
@@ -45,6 +50,7 @@ const completeRegistrationSchema = z.object({
 // ─── Token helper ──────────────────────────────────────────
 function signToken(user: {
   id: string;
+  tenantId: string;
   email: string;
   role: string;
   staffRole: string | null;
@@ -52,6 +58,7 @@ function signToken(user: {
   return jwt.sign(
     {
       userId: user.id,
+      tenantId: user.tenantId,
       email: user.email,
       role: user.role,
       staffRole: user.staffRole ?? null,
@@ -59,6 +66,10 @@ function signToken(user: {
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
+}
+
+function publicTenant(tenant: { id: string; slug: string; name: string }) {
+  return { id: tenant.id, slug: tenant.slug, name: tenant.name };
 }
 
 function publicUser(user: {
@@ -104,7 +115,9 @@ function publicUser(user: {
 // ═══════════════════════════════════════════════════════════
 
 // ─── POST /api/auth/register ──────────────────────────────
-router.post('/register', async (req, res) => {
+// Self-service sign-up is for customers only. Staff and admins are created
+// by their company admin (POST /api/admin/users).
+router.post('/register', resolveTenant, async (req, res) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -115,10 +128,17 @@ router.post('/register', async (req, res) => {
       return;
     }
 
-    const { email, password, name, phone, role, staffRole } = parsed.data;
+    const { email, password, name, phone, role } = parsed.data;
     const normalizedEmail = email.toLowerCase().trim();
 
-    const existing = await prisma.user.findUnique({
+    if (role && role !== 'CUSTOMER') {
+      res.status(403).json({
+        error: 'Staff and admin accounts are created by your company admin',
+      });
+      return;
+    }
+
+    const existing = await prisma.user.findFirst({
       where: { email: normalizedEmail },
     });
     if (existing) {
@@ -127,8 +147,6 @@ router.post('/register', async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const normalizedStaffRole =
-      role === 'STAFF' && staffRole ? staffRole : null;
 
     const user = await prisma.user.create({
       data: {
@@ -136,20 +154,17 @@ router.post('/register', async (req, res) => {
         password: hashedPassword,
         name,
         phone: phone || null,
-        role: role || 'CUSTOMER',
-        staffRole: normalizedStaffRole,
+        role: 'CUSTOMER',
         registrationCompleted: true,
       },
+      include: { tenant: true },
     });
 
-    const token = signToken({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      staffRole: user.staffRole,
+    res.status(201).json({
+      token: signToken(user),
+      user: publicUser(user),
+      tenant: publicTenant(user.tenant),
     });
-
-    res.status(201).json({ token, user: publicUser(user) });
   } catch (err) {
     console.error('[POST /auth/register]', err);
     res.status(500).json({ error: 'Failed to register' });
@@ -168,13 +183,43 @@ router.post('/login', async (req, res) => {
       return;
     }
 
-    const { email, password } = parsed.data;
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
-    });
+    const { email, password, company } = parsed.data;
+    const companySlug = company?.toLowerCase().trim() || null;
 
-    if (!user) {
+    // Login is where the tenant is decided, so look across all companies.
+    const candidates = await runAsSystem(() =>
+      prisma.user.findMany({
+        where: {
+          email: email.toLowerCase().trim(),
+          ...(companySlug && { tenant: { slug: companySlug } }),
+        },
+        include: { tenant: true },
+      })
+    );
+
+    const matches = [];
+    for (const candidate of candidates) {
+      if (await bcrypt.compare(password, candidate.password)) {
+        matches.push(candidate);
+      }
+    }
+
+    if (matches.length === 0) {
       res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
+    if (matches.length > 1) {
+      res.status(409).json({
+        error: 'This account exists in more than one company. Please enter your company code.',
+        code: 'COMPANY_REQUIRED',
+        companies: matches.map((m) => publicTenant(m.tenant)),
+      });
+      return;
+    }
+
+    const user = matches[0];
+    if (!user.tenant.isActive) {
+      res.status(403).json({ error: 'Company account is disabled' });
       return;
     }
     if (!user.isActive) {
@@ -182,20 +227,11 @@ router.post('/login', async (req, res) => {
       return;
     }
 
-    const passwordOk = await bcrypt.compare(password, user.password);
-    if (!passwordOk) {
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    const token = signToken({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      staffRole: user.staffRole,
+    res.json({
+      token: signToken(user),
+      user: publicUser(user),
+      tenant: publicTenant(user.tenant),
     });
-
-    res.json({ token, user: publicUser(user) });
   } catch (err) {
     console.error('[POST /auth/login]', err);
     res.status(500).json({ error: 'Failed to login' });
@@ -206,9 +242,13 @@ router.post('/login', async (req, res) => {
 router.get('/invite/:token', async (req, res) => {
   try {
     const token = String(req.params.token);
-    const quote = await prisma.quote.findUnique({
-      where: { inviteToken: token },
-    });
+    // Invite tokens are globally unique; the quote tells us the company.
+    const quote = await runAsSystem(() =>
+      prisma.quote.findUnique({
+        where: { inviteToken: token },
+        include: { tenant: true },
+      })
+    );
 
     if (!quote) {
       res.status(404).json({ error: 'Invalid or expired invite link' });
@@ -230,6 +270,7 @@ router.get('/invite/:token', async (req, res) => {
       quotedAmount: quote.quotedAmount,
       quotedCurrency: quote.quotedCurrency,
       adminResponse: quote.adminResponse,
+      tenant: publicTenant(quote.tenant),
     });
   } catch (err) {
     console.error('[GET /auth/invite/:token]', err);
@@ -259,9 +300,11 @@ router.post('/complete-registration', async (req, res) => {
       return;
     }
 
-    const quote = await prisma.quote.findUnique({
-      where: { inviteToken: d.token },
-    });
+    const quote = await runAsSystem(() =>
+      prisma.quote.findUnique({
+        where: { inviteToken: d.token },
+      })
+    );
     if (!quote) {
       res.status(404).json({ error: 'Invalid invite token' });
       return;
@@ -271,53 +314,54 @@ router.post('/complete-registration', async (req, res) => {
       return;
     }
 
-    const email = quote.email.toLowerCase();
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      res
-        .status(409)
-        .json({ error: 'An account with this email already exists. Please log in.' });
-      return;
-    }
+    // The new customer account belongs to the company that sent the quote.
+    await runWithTenant(quote.tenantId, async () => {
+      const email = quote.email.toLowerCase();
+      const existing = await prisma.user.findFirst({ where: { email } });
+      if (existing) {
+        res
+          .status(409)
+          .json({ error: 'An account with this email already exists. Please log in.' });
+        return;
+      }
 
-    const hashedPassword = await bcrypt.hash(d.password, 10);
+      const hashedPassword = await bcrypt.hash(d.password, 10);
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        password: hashedPassword,
-        name: d.name,
-        phone: d.phone,
-        role: 'CUSTOMER',
-        companyName: d.companyName || quote.companyName || null,
-        tinNumber: d.tinNumber || null,
-        ninNumber: d.ninNumber || null,
-        passportNumber: d.passportNumber || null,
-        address: d.address || null,
-        city: d.city || null,
-        country: d.country || null,
-        documentUrl: d.documentUrl || null,
-        registrationCompleted: true,
-      },
+      const user = await prisma.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          name: d.name,
+          phone: d.phone,
+          role: 'CUSTOMER',
+          companyName: d.companyName || quote.companyName || null,
+          tinNumber: d.tinNumber || null,
+          ninNumber: d.ninNumber || null,
+          passportNumber: d.passportNumber || null,
+          address: d.address || null,
+          city: d.city || null,
+          country: d.country || null,
+          documentUrl: d.documentUrl || null,
+          registrationCompleted: true,
+        },
+        include: { tenant: true },
+      });
+
+      // Link quote to account
+      await prisma.quote.update({
+        where: { id: quote.id },
+        data: {
+          customerId: user.id,
+          inviteUsedAt: new Date(),
+        },
+      });
+
+      res.status(201).json({
+        token: signToken(user),
+        user: publicUser(user),
+        tenant: publicTenant(user.tenant),
+      });
     });
-
-    // Link quote to account
-    await prisma.quote.update({
-      where: { id: quote.id },
-      data: {
-        customerId: user.id,
-        inviteUsedAt: new Date(),
-      },
-    });
-
-    const jwtToken = signToken({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      staffRole: user.staffRole,
-    });
-
-    res.status(201).json({ token: jwtToken, user: publicUser(user) });
   } catch (err) {
     console.error('[POST /auth/complete-registration]', err);
     res.status(500).json({ error: 'Failed to complete registration' });
@@ -333,12 +377,13 @@ router.get('/me', async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
+      include: { tenant: true },
     });
     if (!user) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    res.json(publicUser(user));
+    res.json({ ...publicUser(user), tenant: publicTenant(user.tenant) });
   } catch (err) {
     console.error('[GET /auth/me]', err);
     res.status(500).json({ error: 'Failed to fetch user' });

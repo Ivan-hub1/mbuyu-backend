@@ -3,7 +3,14 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole, AuthRequest } from '../middleware/auth';
-import { sendQuoteResponseEmail } from '../lib/email';
+import { resolveTenant } from '../middleware/tenant';
+import {
+  sendQuoteResponseEmail,
+  sendQuoteRejectedEmail,
+  sendQuoteAcceptedEmail,
+} from '../lib/email';
+import { generateQuotePdf } from '../lib/quotePdf';
+import { currentBrand } from '../lib/brand';
 
 const router = Router();
 
@@ -31,6 +38,21 @@ function numOrStrToBlankString(
   if (v === null) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
+}
+
+/** Run an email send and report the outcome to the admin UI instead of throwing. */
+async function trySendEmail(
+  send: () => Promise<boolean>
+): Promise<{ emailSent: boolean; emailError: string | null }> {
+  try {
+    const sent = await send();
+    return sent
+      ? { emailSent: true, emailError: null }
+      : { emailSent: false, emailError: 'Email is not configured on the server (SMTP).' };
+  } catch (e) {
+    console.error('[quotes] email failed', e);
+    return { emailSent: false, emailError: 'Email failed to send — changes were saved.' };
+  }
 }
 
 // ─── Validation ────────────────────────────────────────────
@@ -77,6 +99,7 @@ const acceptQuoteSchema = z.object({
   weightKg: z.union([z.string(), z.number()]).optional(),
   volumeCbm: z.union([z.string(), z.number()]).nullable().optional(),
   pieces: z.union([z.string(), z.number()]).optional(),
+  sendEmailToCustomer: z.boolean().optional().default(true),
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -84,7 +107,8 @@ const acceptQuoteSchema = z.object({
 // ═══════════════════════════════════════════════════════════
 
 // ─── POST /api/quotes — public quote request ─────────────
-router.post('/', async (req, res) => {
+// The receiving company comes from X-Tenant / `tenant` (see resolveTenant).
+router.post('/', resolveTenant, async (req, res) => {
   try {
     const parsed = createQuoteSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -206,6 +230,10 @@ router.post(
           .json({ error: 'Shipment already created for this quote' });
         return;
       }
+      if (quote.status === 'REJECTED') {
+        res.status(409).json({ error: 'This quote was rejected and cannot be accepted' });
+        return;
+      }
 
       if (body.assignedToId) {
         const staff = await prisma.user.findUnique({
@@ -261,10 +289,28 @@ router.post(
         return created;
       });
 
+      const email = body.sendEmailToCustomer
+        ? await trySendEmail(() =>
+            sendQuoteAcceptedEmail({
+              to: quote.email,
+              fullName: quote.fullName,
+              reference: quote.reference,
+              trackingNumber: shipment.trackingNumber,
+              quotedAmount: quote.quotedAmount,
+              quotedCurrency: quote.quotedCurrency,
+              taxName: quote.taxName,
+              taxAmount: quote.taxAmount,
+              inviteToken: quote.inviteUsedAt ? null : quote.inviteToken,
+            })
+          )
+        : { emailSent: false, emailError: null };
+
       res.status(201).json({
         trackingNumber: shipment.trackingNumber,
         shipmentId: shipment.id,
         quoteId: quote.id,
+        _emailSent: email.emailSent,
+        _emailError: email.emailError,
       });
     } catch (err) {
       console.error('[POST /quotes/:id/accept]', err);
@@ -272,6 +318,37 @@ router.post(
     }
   }
 );
+
+// ─── GET /api/quotes/:id/pdf — branded quotation PDF ──────
+router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const quote = await prisma.quote.findUnique({ where: { id } });
+    if (!quote) {
+      res.status(404).json({ error: 'Quote not found' });
+      return;
+    }
+    const user = req.user!;
+    if (
+      user.role !== 'ADMIN' &&
+      quote.email.toLowerCase() !== user.email.toLowerCase()
+    ) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    const doc = generateQuotePdf(quote, await currentBrand());
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Quote-${quote.reference}.pdf"`
+    );
+    doc.pipe(res);
+  } catch (err) {
+    console.error('[GET /quotes/:id/pdf]', err);
+    res.status(500).json({ error: 'Failed to generate PDF' });
+  }
+});
 
 // ─── GET /api/quotes/:id ──────────────────────────────────
 router.get('/:id', async (req: AuthRequest, res: Response) => {
@@ -320,6 +397,14 @@ router.patch(
         res.status(404).json({ error: 'Quote not found' });
         return;
       }
+      // (data.status can never be ACCEPTED — that only happens via /accept)
+      if (existing.status === 'ACCEPTED' && data.status !== undefined) {
+        res.status(409).json({
+          error: 'This quote is already accepted and has a shipment — its status can no longer change',
+        });
+        return;
+      }
+      const nextStatus = data.status ?? existing.status;
 
       // ── Normalize ──────────────────────────────────────
       const quotedAmount = numOrStrToBlankString(data.quotedAmount);
@@ -349,7 +434,8 @@ router.patch(
 
       // ── Invite token ───────────────────────────────────
       const willBeQuoted =
-        data.status === 'QUOTED' || !!quotedAmount || !!adminResponse;
+        nextStatus !== 'REJECTED' &&
+        (nextStatus === 'QUOTED' || !!quotedAmount || !!adminResponse);
 
       let inviteToken = existing.inviteToken;
       let inviteTokenSentAt = existing.inviteTokenSentAt;
@@ -370,7 +456,9 @@ router.patch(
           ...(taxRateStr !== undefined && { taxRate: taxRateStr }),
           ...(taxAmount !== undefined && { taxAmount }),
           ...(taxEnabled !== undefined && { taxEnabled }),
-          ...(data.status === 'QUOTED' && { respondedAt: new Date() }),
+          ...((data.status === 'QUOTED' || data.status === 'REJECTED') && {
+            respondedAt: new Date(),
+          }),
           ...(inviteToken && !existing.inviteToken && {
             inviteToken,
             inviteTokenSentAt,
@@ -379,19 +467,29 @@ router.patch(
       });
 
       // ── Email ──────────────────────────────────────────
-      // Send when (a) admin explicitly asked, OR
-      //           (b) this save transitions the quote into QUOTED
-      const transitioningToQuoted =
-        data.status === 'QUOTED' && existing.status !== 'QUOTED';
+      // The admin's "email customer" choice wins; if they didn't say, email
+      // automatically when the quote moves into QUOTED or REJECTED.
+      const statusChanged = updated.status !== existing.status;
       const shouldEmail =
-        data.sendEmailToCustomer === true || transitioningToQuoted;
+        data.sendEmailToCustomer ??
+        (statusChanged &&
+          (updated.status === 'QUOTED' || updated.status === 'REJECTED'));
 
-      let emailSent = false;
-      let emailError: string | null = null;
+      let email = { emailSent: false, emailError: null as string | null };
 
-      if (shouldEmail && updated.inviteToken) {
-        try {
-          await sendQuoteResponseEmail({
+      if (shouldEmail && updated.status === 'REJECTED') {
+        email = await trySendEmail(() =>
+          sendQuoteRejectedEmail({
+            to: updated.email,
+            fullName: updated.fullName,
+            reference: updated.reference,
+            adminResponse: updated.adminResponse,
+          })
+        );
+      } else if (shouldEmail && updated.inviteToken) {
+        const inviteToken = updated.inviteToken;
+        email = await trySendEmail(() =>
+          sendQuoteResponseEmail({
             to: updated.email,
             fullName: updated.fullName,
             reference: updated.reference,
@@ -400,16 +498,12 @@ router.patch(
             taxName: updated.taxName,
             taxAmount: updated.taxAmount,
             adminResponse: updated.adminResponse,
-            inviteToken: updated.inviteToken,
-          });
-          emailSent = true;
-        } catch (e) {
-          console.error('[quotes] quote-response email failed', e);
-          emailError = 'Email failed to send — quote was saved.';
-        }
+            inviteToken,
+          })
+        );
       }
 
-      res.json({ ...updated, _emailSent: emailSent, _emailError: emailError });
+      res.json({ ...updated, _emailSent: email.emailSent, _emailError: email.emailError });
     } catch (err) {
       console.error('[PATCH /quotes/:id]', err);
       res.status(500).json({ error: 'Failed to update quote' });

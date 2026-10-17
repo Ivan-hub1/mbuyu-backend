@@ -1,8 +1,8 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
-import { prisma } from '../lib/prisma';
+import { prisma, isRecordNotFound } from '../lib/prisma';
 import { requireAuth, requireStaffRole, AuthRequest } from '../middleware/auth';
-import { sendChecklistCleared } from '../lib/mailer';
+import { sendChecklistCleared } from '../lib/email';
 
 const router = Router();
 
@@ -140,6 +140,10 @@ router.patch('/:id/start', async (req: AuthRequest, res: Response) => {
 
     res.json(ticket);
   } catch (err) {
+    if (isRecordNotFound(err)) {
+      res.status(404).json({ error: 'Ticket not found' });
+      return;
+    }
     console.error('[PATCH /maintenance/:id/start]', err);
     res.status(500).json({ error: 'Failed to start ticket' });
   }

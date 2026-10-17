@@ -236,7 +236,7 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const email = String(req.params.email).toLowerCase();
-      const user = await prisma.user.findUnique({ where: { email } });
+      const user = await prisma.user.findFirst({ where: { email } });
       const statement = await buildStatement(email);
       res.json({
         customer: user
