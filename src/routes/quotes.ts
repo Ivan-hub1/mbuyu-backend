@@ -305,6 +305,80 @@ router.post(
   }
 );
 
+// ─── POST /api/quotes/:id/resend-email ────────────────────
+// Re-sends whichever email matches the quote's current status:
+// ACCEPTED → shipment booked (tracking number), REJECTED → rejection,
+// otherwise → "your quote is ready".
+router.post(
+  '/:id/resend-email',
+  requireRole('ADMIN'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const id = req.params.id as string;
+      const quote = await prisma.quote.findUnique({
+        where: { id },
+        include: { shipment: { select: { trackingNumber: true } } },
+      });
+      if (!quote) {
+        res.status(404).json({ error: 'Quote not found' });
+        return;
+      }
+
+      let email;
+      if (quote.status === 'ACCEPTED' && quote.shipment) {
+        const trackingNumber = quote.shipment.trackingNumber;
+        email = await trySendEmail(() =>
+          sendQuoteAcceptedEmail({
+            to: quote.email,
+            fullName: quote.fullName,
+            reference: quote.reference,
+            trackingNumber,
+            quotedAmount: quote.quotedAmount,
+            quotedCurrency: quote.quotedCurrency,
+            taxName: quote.taxName,
+            taxAmount: quote.taxAmount,
+            inviteToken: quote.inviteUsedAt ? null : quote.inviteToken,
+          })
+        );
+      } else if (quote.status === 'REJECTED') {
+        email = await trySendEmail(() =>
+          sendQuoteRejectedEmail({
+            to: quote.email,
+            fullName: quote.fullName,
+            reference: quote.reference,
+            adminResponse: quote.adminResponse,
+          })
+        );
+      } else if (quote.inviteToken) {
+        const inviteToken = quote.inviteToken;
+        email = await trySendEmail(() =>
+          sendQuoteResponseEmail({
+            to: quote.email,
+            fullName: quote.fullName,
+            reference: quote.reference,
+            quotedAmount: quote.quotedAmount,
+            quotedCurrency: quote.quotedCurrency,
+            taxName: quote.taxName,
+            taxAmount: quote.taxAmount,
+            adminResponse: quote.adminResponse,
+            inviteToken,
+          })
+        );
+      } else {
+        res.status(400).json({
+          error: 'Nothing to send yet — add a quoted amount or response and save first',
+        });
+        return;
+      }
+
+      res.json({ to: quote.email, _emailSent: email.emailSent, _emailError: email.emailError });
+    } catch (err) {
+      console.error('[POST /quotes/:id/resend-email]', err);
+      res.status(500).json({ error: 'Failed to resend email' });
+    }
+  }
+);
+
 // ─── GET /api/quotes/:id/pdf — branded quotation PDF ──────
 router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
   try {

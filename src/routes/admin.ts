@@ -10,6 +10,7 @@ import {
 } from '../middleware/auth';
 import { currentTenantId } from '../lib/tenantContext';
 import { sendStaffInviteEmail } from '../lib/email';
+import { resetPasswordAndSendInvite } from '../lib/invites';
 
 const router = Router();
 
@@ -198,6 +199,27 @@ router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
     }
     console.error('[DELETE /admin/users/:id]', err);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// ─── POST /api/admin/users/:id/resend-invite ──────────────
+// Sets a new temporary password and emails the login details again.
+router.post('/users/:id/resend-invite', async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    if (!req.user!.isSuperAdmin && (await isSuperAdminUser(id))) {
+      res.status(403).json({ error: 'The platform owner account can only be changed by itself' });
+      return;
+    }
+    const result = await resetPasswordAndSendInvite(id);
+    if (!result) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[POST /admin/users/:id/resend-invite]', err);
+    res.status(500).json({ error: 'Failed to resend invite' });
   }
 });
 

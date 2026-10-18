@@ -10,6 +10,7 @@ import {
 } from '../middleware/auth';
 import { runAsSystem, runWithTenant } from '../lib/tenantContext';
 import { sendStaffInviteEmail } from '../lib/email';
+import { resetPasswordAndSendInvite } from '../lib/invites';
 
 // ═══════════════════════════════════════════════════════════
 // PLATFORM — manage tenants (companies). SUPER_ADMIN only.
@@ -174,6 +175,31 @@ router.patch('/tenants/:id', async (req: AuthRequest, res: Response) => {
     }
     console.error('[PATCH /platform/tenants/:id]', err);
     res.status(500).json({ error: 'Failed to update company' });
+  }
+});
+
+// ─── POST /api/platform/tenants/:id/resend-invite ────────
+// New temporary password + login email for the company's first admin.
+router.post('/tenants/:id/resend-invite', async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const admin = await runAsSystem(() =>
+      prisma.user.findFirst({
+        where: { tenantId: id, role: 'ADMIN' },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      })
+    );
+    if (!admin) {
+      res.status(404).json({ error: 'This company has no admin user' });
+      return;
+    }
+    // Inside the company's context so the email carries its branding
+    const result = await runWithTenant(id, () => resetPasswordAndSendInvite(admin.id));
+    res.json(result);
+  } catch (err) {
+    console.error('[POST /platform/tenants/:id/resend-invite]', err);
+    res.status(500).json({ error: 'Failed to resend invite' });
   }
 });
 
