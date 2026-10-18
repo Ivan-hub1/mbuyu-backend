@@ -131,7 +131,7 @@ router.post(
         const recipients = opsUsers.length
           ? opsUsers
           : await prisma.user.findMany({
-              where: { isActive: true, role: 'ADMIN' },
+              where: { isActive: true, role: { in: ['ADMIN', 'SUPER_ADMIN'] } },
               select: { email: true },
             });
 

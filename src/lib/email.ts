@@ -6,11 +6,19 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = process.env.SMTP_USER || 'noreply@mbuyucfl.com';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 
+// Local development only: antivirus "HTTPS/email scanning" or a company proxy
+// can swap the SMTP server's certificate, which Node rejects as self-signed.
+// Never enable this in production.
+const SMTP_ALLOW_SELF_SIGNED =
+  process.env.SMTP_ALLOW_SELF_SIGNED === 'true' &&
+  process.env.NODE_ENV !== 'production';
+
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
   secure: SMTP_PORT === 465,
   auth: { user: SMTP_USER, pass: SMTP_PASS },
+  ...(SMTP_ALLOW_SELF_SIGNED && { tls: { rejectUnauthorized: false } }),
 });
 
 export const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';

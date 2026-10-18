@@ -224,7 +224,7 @@ router.post('/', requireRole('ADMIN'), async (req: AuthRequest, res: Response) =
     }
     if (data.assignedToId) {
       const staff = await prisma.user.findUnique({ where: { id: data.assignedToId } });
-      if (!staff || (staff.role !== 'STAFF' && staff.role !== 'ADMIN')) {
+      if (!staff || !['STAFF', 'ADMIN', 'SUPER_ADMIN'].includes(staff.role)) {
         res.status(400).json({ error: 'User is not a staff member' });
         return;
       }
@@ -414,7 +414,7 @@ router.patch('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res: 
       const user = await prisma.user.findUnique({
         where: { id: assignedToId },
       });
-      if (!user || (user.role !== 'STAFF' && user.role !== 'ADMIN')) {
+      if (!user || !['STAFF', 'ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
         res.status(400).json({ error: 'User is not a staff member' });
         return;
       }

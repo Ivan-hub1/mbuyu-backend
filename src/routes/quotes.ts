@@ -240,7 +240,7 @@ router.post(
           where: { id: body.assignedToId },
           select: { id: true, role: true },
         });
-        if (!staff || (staff.role !== 'STAFF' && staff.role !== 'ADMIN')) {
+        if (!staff || !['STAFF', 'ADMIN', 'SUPER_ADMIN'].includes(staff.role)) {
           res.status(400).json({ error: 'Invalid assignee' });
           return;
         }

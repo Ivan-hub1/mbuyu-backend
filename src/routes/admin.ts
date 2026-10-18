@@ -17,6 +17,11 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireRole('ADMIN'));
 
+async function isSuperAdminUser(id: string) {
+  const target = await prisma.user.findUnique({ where: { id }, select: { role: true } });
+  return target?.role === 'SUPER_ADMIN';
+}
+
 // ─── Validation ────────────────────────────────────────────
 const createUserSchema = z.object({
   name: z.string().min(2, 'Name too short'),
@@ -129,6 +134,10 @@ router.patch('/users/:id', async (req: AuthRequest, res: Response) => {
       res.status(400).json({ error: 'Invalid role' });
       return;
     }
+    if (!req.user!.isSuperAdmin && (await isSuperAdminUser(id))) {
+      res.status(403).json({ error: 'The platform owner account can only be changed by itself' });
+      return;
+    }
 
     const user = await prisma.user.update({
       where: { id },
@@ -172,6 +181,10 @@ router.delete('/users/:id', async (req: AuthRequest, res: Response) => {
 
     if (req.user?.userId === id) {
       res.status(400).json({ error: 'Cannot delete your own account' });
+      return;
+    }
+    if (await isSuperAdminUser(id)) {
+      res.status(403).json({ error: 'The platform owner account cannot be deleted' });
       return;
     }
 

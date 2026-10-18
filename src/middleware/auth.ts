@@ -12,6 +12,9 @@ export interface AuthRequest extends Request {
     email: string;
     role: string;
     staffRole?: string | null;
+    // Platform owner. Their `role` is ADMIN inside requests, so they also
+    // have full admin rights in their own company.
+    isSuperAdmin: boolean;
   };
 }
 
@@ -97,12 +100,14 @@ export async function requireAuth(
     return res.status(401).json({ error: 'Your account or company has been disabled' });
   }
 
+  const isSuperAdmin = session.role === 'SUPER_ADMIN';
   req.user = {
     userId: payload.userId,
     tenantId: session.tenantId,
     email: session.email,
-    role: session.role,
+    role: isSuperAdmin ? 'ADMIN' : session.role,
     staffRole: session.staffRole,
+    isSuperAdmin,
   };
 
   // Everything downstream (and every Prisma query it makes) is scoped to this tenant.
@@ -115,7 +120,10 @@ export function requireRole(...roles: string[]) {
     if (!req.user) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
-    if (!roles.includes(req.user.role)) {
+    const allowed =
+      roles.includes(req.user.role) ||
+      (roles.includes('SUPER_ADMIN') && req.user.isSuperAdmin);
+    if (!allowed) {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
     next();
