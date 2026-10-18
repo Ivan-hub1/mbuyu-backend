@@ -16,6 +16,7 @@ import geocodeRouter from './routes/geocode';
 import statementsRouter from './routes/statements';
 import uploadsRouter from './routes/uploads';
 import transfersRouter from './routes/transfers';
+import { emailStatus } from './lib/email';
 import platformRouter from './routes/platform';
 
 const app = express();
@@ -82,4 +83,5 @@ app.listen(PORT, () => {
         : 'NOT CONFIGURED — set CLOUDINARY_* env vars'
     }`
   );
+  console.log(`   Email:      ${emailStatus()}`);
 });

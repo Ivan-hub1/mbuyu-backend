@@ -10,8 +10,9 @@ const SMTP_PASS = process.env.SMTP_PASS || '';
 // can swap the SMTP server's certificate, which Node rejects as self-signed.
 // Never enable this in production.
 const SMTP_ALLOW_SELF_SIGNED =
-  process.env.SMTP_ALLOW_SELF_SIGNED === 'true' &&
-  process.env.NODE_ENV !== 'production';
+  ['true', '1', 'yes'].includes(
+    (process.env.SMTP_ALLOW_SELF_SIGNED || '').trim().toLowerCase()
+  ) && process.env.NODE_ENV?.trim() !== 'production';
 
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
@@ -22,6 +23,14 @@ const transporter = nodemailer.createTransport({
 });
 
 export const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
+
+/** One-line summary for the startup log, so email setup problems are visible. */
+export function emailStatus(): string {
+  if (!SMTP_PASS) return 'DISABLED — SMTP_PASS not set';
+  return `${SMTP_USER} via ${SMTP_HOST}:${SMTP_PORT}${
+    SMTP_ALLOW_SELF_SIGNED ? ' (self-signed certificates allowed — dev only)' : ''
+  }`;
+}
 
 // Resolves true when sent, false when SMTP isn't configured; throws if the
 // SMTP server rejects it. Fire-and-forget callers must attach .catch().
