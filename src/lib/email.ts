@@ -1,34 +1,52 @@
 import nodemailer from 'nodemailer';
 import { currentBrand } from './brand';
 
-const SMTP_HOST = process.env.SMTP_HOST || 'mail.mbuyucfl.com';
-const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
-const SMTP_USER = process.env.SMTP_USER || 'noreply@mbuyucfl.com';
-const SMTP_PASS = process.env.SMTP_PASS || '';
+// Settings are read when an email is sent (not when this file loads), so they
+// always reflect the loaded .env regardless of module load order.
+function smtpSettings() {
+  const env = (key: string) => (process.env[key] || '').trim();
+  const port = Number(env('SMTP_PORT') || 465);
+  return {
+    host: env('SMTP_HOST') || 'mail.mbuyucfl.com',
+    port,
+    user: env('SMTP_USER') || 'noreply@mbuyucfl.com',
+    pass: process.env.SMTP_PASS || '',
+    // Local development only: antivirus "HTTPS/email scanning", a company proxy
+    // or a mail server with its own certificate can fail Node's certificate
+    // check ("self-signed certificate in certificate chain").
+    allowSelfSigned:
+      ['true', '1', 'yes'].includes(env('SMTP_ALLOW_SELF_SIGNED').toLowerCase()) &&
+      env('NODE_ENV') !== 'production',
+  };
+}
 
-// Local development only: antivirus "HTTPS/email scanning" or a company proxy
-// can swap the SMTP server's certificate, which Node rejects as self-signed.
-// Never enable this in production.
-const SMTP_ALLOW_SELF_SIGNED =
-  ['true', '1', 'yes'].includes(
-    (process.env.SMTP_ALLOW_SELF_SIGNED || '').trim().toLowerCase()
-  ) && process.env.NODE_ENV?.trim() !== 'production';
+let transporter: ReturnType<typeof nodemailer.createTransport> | null = null;
+let transporterKey = '';
 
-const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  auth: { user: SMTP_USER, pass: SMTP_PASS },
-  ...(SMTP_ALLOW_SELF_SIGNED && { tls: { rejectUnauthorized: false } }),
-});
+function getTransporter() {
+  const smtp = smtpSettings();
+  const key = JSON.stringify(smtp);
+  if (!transporter || key !== transporterKey) {
+    transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.port === 465,
+      auth: { user: smtp.user, pass: smtp.pass },
+      ...(smtp.allowSelfSigned && { tls: { rejectUnauthorized: false } }),
+    });
+    transporterKey = key;
+  }
+  return { transporter, smtp };
+}
 
 export const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
 
 /** One-line summary for the startup log, so email setup problems are visible. */
 export function emailStatus(): string {
-  if (!SMTP_PASS) return 'DISABLED — SMTP_PASS not set';
-  return `${SMTP_USER} via ${SMTP_HOST}:${SMTP_PORT}${
-    SMTP_ALLOW_SELF_SIGNED ? ' (self-signed certificates allowed — dev only)' : ''
+  const smtp = smtpSettings();
+  if (!smtp.pass) return 'DISABLED — SMTP_PASS not set';
+  return `${smtp.user} via ${smtp.host}:${smtp.port}${
+    smtp.allowSelfSigned ? ' (self-signed certificates allowed — dev only)' : ''
   }`;
 }
 
@@ -40,13 +58,14 @@ export async function sendMail(
   subject: string,
   html: string
 ): Promise<boolean> {
-  if (!SMTP_PASS) {
+  const { transporter, smtp } = getTransporter();
+  if (!smtp.pass) {
     console.warn('[mailer] SMTP_PASS not set — skipping send:', subject);
     return false;
   }
   const brand = await currentBrand();
   await transporter.sendMail({
-    from: `"${brand.name}" <${SMTP_USER}>`,
+    from: `"${brand.name}" <${smtp.user}>`,
     to: Array.isArray(to) ? to.join(',') : to,
     subject,
     html,
