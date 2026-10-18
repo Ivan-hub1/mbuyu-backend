@@ -15,8 +15,6 @@ import { currentBrand } from '../lib/brand';
 
 const router = Router();
 
-const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
-
 // ─── Helpers ───────────────────────────────────────────────
 /** "" → null, undefined → undefined (so PATCH can distinguish "not provided" from "clear it") */
 function blankToNull<T extends string | null | undefined>(v: T): T | null {
@@ -39,6 +37,15 @@ function numOrStrToBlankString(
   if (v === null) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
+}
+
+/** Does this customer already have an account in the current company? */
+async function customerHasAccount(email: string): Promise<boolean> {
+  const user = await prisma.user.findFirst({
+    where: { email: email.toLowerCase().trim() },
+    select: { id: true },
+  });
+  return !!user;
 }
 
 // ─── Validation ────────────────────────────────────────────
@@ -241,6 +248,9 @@ router.post(
           ? String(body.volumeCbm)
           : quote.volumeCbm ?? null;
 
+      // Sign-up link for the customer, even if the quote was never emailed
+      const inviteToken = quote.inviteToken ?? crypto.randomBytes(24).toString('hex');
+
       const shipment = await prisma.$transaction(async (tx) => {
         const created = await tx.shipment.create({
           data: {
@@ -269,6 +279,7 @@ router.post(
             shipmentId: created.id,
             status: 'ACCEPTED',
             respondedAt: quote.respondedAt ?? new Date(),
+            ...(!quote.inviteToken && { inviteToken, inviteTokenSentAt: new Date() }),
           },
         });
 
@@ -276,7 +287,7 @@ router.post(
       });
 
       const email = body.sendEmailToCustomer
-        ? await trySendEmail(() =>
+        ? await trySendEmail(async () =>
             sendQuoteAcceptedEmail({
               to: quote.email,
               fullName: quote.fullName,
@@ -286,7 +297,8 @@ router.post(
               quotedCurrency: quote.quotedCurrency,
               taxName: quote.taxName,
               taxAmount: quote.taxAmount,
-              inviteToken: quote.inviteUsedAt ? null : quote.inviteToken,
+              inviteToken: quote.inviteUsedAt ? null : inviteToken,
+              hasAccount: await customerHasAccount(quote.email),
             })
           )
         : { emailSent: false, emailError: null };
@@ -327,7 +339,7 @@ router.post(
       let email;
       if (quote.status === 'ACCEPTED' && quote.shipment) {
         const trackingNumber = quote.shipment.trackingNumber;
-        email = await trySendEmail(() =>
+        email = await trySendEmail(async () =>
           sendQuoteAcceptedEmail({
             to: quote.email,
             fullName: quote.fullName,
@@ -338,10 +350,11 @@ router.post(
             taxName: quote.taxName,
             taxAmount: quote.taxAmount,
             inviteToken: quote.inviteUsedAt ? null : quote.inviteToken,
+            hasAccount: await customerHasAccount(quote.email),
           })
         );
       } else if (quote.status === 'REJECTED') {
-        email = await trySendEmail(() =>
+        email = await trySendEmail(async () =>
           sendQuoteRejectedEmail({
             to: quote.email,
             fullName: quote.fullName,
@@ -351,7 +364,7 @@ router.post(
         );
       } else if (quote.inviteToken) {
         const inviteToken = quote.inviteToken;
-        email = await trySendEmail(() =>
+        email = await trySendEmail(async () =>
           sendQuoteResponseEmail({
             to: quote.email,
             fullName: quote.fullName,
@@ -362,6 +375,7 @@ router.post(
             taxAmount: quote.taxAmount,
             adminResponse: quote.adminResponse,
             inviteToken,
+            hasAccount: await customerHasAccount(quote.email),
           })
         );
       } else {
@@ -538,7 +552,7 @@ router.patch(
       let email = { emailSent: false, emailError: null as string | null };
 
       if (shouldEmail && updated.status === 'REJECTED') {
-        email = await trySendEmail(() =>
+        email = await trySendEmail(async () =>
           sendQuoteRejectedEmail({
             to: updated.email,
             fullName: updated.fullName,
@@ -548,7 +562,7 @@ router.patch(
         );
       } else if (shouldEmail && updated.inviteToken) {
         const inviteToken = updated.inviteToken;
-        email = await trySendEmail(() =>
+        email = await trySendEmail(async () =>
           sendQuoteResponseEmail({
             to: updated.email,
             fullName: updated.fullName,
@@ -559,6 +573,7 @@ router.patch(
             taxAmount: updated.taxAmount,
             adminResponse: updated.adminResponse,
             inviteToken,
+            hasAccount: await customerHasAccount(updated.email),
           })
         );
       }

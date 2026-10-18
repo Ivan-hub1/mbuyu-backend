@@ -39,7 +39,14 @@ function getTransporter() {
   return { transporter, smtp };
 }
 
-export const APP_URL = process.env.APP_URL || 'https://app.mbuyucfl.com';
+/** Where links in emails point: APP_URL, else FRONTEND_URL, else the live site.
+ *  For local testing set APP_URL=http://localhost:5173 */
+export function appUrl(): string {
+  const url =
+    (process.env.APP_URL || process.env.FRONTEND_URL || '').trim() ||
+    'https://app.mbuyucfl.com';
+  return url.replace(/\/+$/, '');
+}
 
 /** One-line summary for the startup log, so email setup problems are visible. */
 export function emailStatus(): string {
@@ -47,7 +54,7 @@ export function emailStatus(): string {
   if (!smtp.pass) return 'DISABLED — SMTP_PASS not set';
   return `${smtp.user} via ${smtp.host}:${smtp.port}${
     smtp.allowSelfSigned ? ' (self-signed certificates allowed — dev only)' : ''
-  }`;
+  } · links → ${appUrl()}`;
 }
 
 // Resolves true when sent, false when SMTP isn't configured; throws if the
@@ -125,7 +132,7 @@ export async function sendStaffInviteEmail(
           <strong>Temporary password:</strong> <code>${tempPassword}</code>
         </p>
         <p style="margin-top:20px;">
-          <a href="${APP_URL}/login" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
+          <a href="${appUrl()}/login" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
             Log in to your account
           </a>
         </p>
@@ -145,11 +152,15 @@ export async function sendQuoteResponseEmail(opts: {
   taxAmount?: string | null;
   adminResponse?: string | null;
   inviteToken: string;
+  // Customer already has an account → send them to log in instead of sign up
+  hasAccount?: boolean;
 }) {
   const b = await currentBrand();
   const total = quoteTotal(opts);
 
-  const signupUrl = `${APP_URL}/register/complete?token=${opts.inviteToken}`;
+  const ctaUrl = opts.hasAccount
+    ? `${appUrl()}/login`
+    : `${appUrl()}/register/complete?token=${opts.inviteToken}`;
 
   return sendMail(
     opts.to,
@@ -169,15 +180,23 @@ export async function sendQuoteResponseEmail(opts: {
             ? `<p style="white-space:pre-wrap;">${opts.adminResponse}</p>`
             : ''
         }
-        <p><strong>Next step:</strong> Create your customer account to accept this quote, track your shipment, and download future statements.</p>
+        <p><strong>Next step:</strong> ${
+          opts.hasAccount
+            ? 'Log in to your customer account to view this quote, track your shipments and download statements.'
+            : 'Create your customer account to view this quote, track your shipments and download statements — all in one place.'
+        }</p>
         <p style="margin-top:20px;">
-          <a href="${signupUrl}" style="background:#E85D04;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
-            Create Your Account
+          <a href="${ctaUrl}" style="background:#E85D04;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">
+            ${opts.hasAccount ? 'Log In to View' : 'Create Your Account'}
           </a>
         </p>
-        <p style="font-size:12px;color:#888;">
+        ${
+          opts.hasAccount
+            ? ''
+            : `<p style="font-size:12px;color:#888;">
           This link is unique to you and can only be used once. If you didn't request a quote from us, please ignore this email.
-        </p>
+        </p>`
+        }
       </div>
     `
   );
@@ -205,7 +224,7 @@ export async function sendQuoteRejectedEmail(opts: {
         }
         <p>If your requirements change, we would be glad to prepare a new quote for you.</p>
         <p style="margin-top:20px;">
-          <a href="${APP_URL}/quote" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
+          <a href="${appUrl()}/quote" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
             Request a new quote
           </a>
         </p>
@@ -223,12 +242,13 @@ export async function sendQuoteAcceptedEmail(opts: {
   quotedCurrency?: string | null;
   taxName?: string | null;
   taxAmount?: string | null;
-  // Present when the customer hasn't created their account yet
+  // Used for the sign-up link when the customer has no account yet
   inviteToken?: string | null;
+  hasAccount?: boolean;
 }) {
   const b = await currentBrand();
   const total = quoteTotal(opts);
-  const trackUrl = `${APP_URL}/track/${encodeURIComponent(opts.trackingNumber)}`;
+  const trackUrl = `${appUrl()}/track/${encodeURIComponent(opts.trackingNumber)}`;
 
   return sendMail(
     opts.to,
@@ -249,9 +269,12 @@ export async function sendQuoteAcceptedEmail(opts: {
           </a>
         </p>
         ${
-          opts.inviteToken
+          opts.hasAccount
+            ? `<p>Follow every update and download statements in your customer account:
+                 <a href="${appUrl()}/login">log in</a>.</p>`
+            : opts.inviteToken
             ? `<p>Create your customer account to follow every update and download statements:
-                 <a href="${APP_URL}/register/complete?token=${opts.inviteToken}">create your account</a>.</p>`
+                 <a href="${appUrl()}/register/complete?token=${opts.inviteToken}">create your account</a>.</p>`
             : ''
         }
       </div>
@@ -274,7 +297,7 @@ export async function sendChecklistCleared(opts: {
         <p>Hello ${opts.driverName},</p>
         <p>Your vehicle <strong>${opts.vehiclePlate}</strong> has been cleared by operations. You may now start the journey.</p>
         <p style="margin-top:20px;">
-          <a href="${APP_URL}/driver/journey" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
+          <a href="${appUrl()}/driver/journey" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
             Start Journey
           </a>
         </p>
@@ -314,7 +337,7 @@ export async function sendMaintenanceAlert(opts: {
         <ul>${issuesList}</ul>
         ${opts.notes ? `<p><strong>Notes:</strong> ${opts.notes}</p>` : ''}
         <p style="margin-top:20px;">
-          <a href="${APP_URL}/dashboard/maintenance" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
+          <a href="${appUrl()}/dashboard/maintenance" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">
             Open Maintenance Queue
           </a>
         </p>
@@ -352,7 +375,7 @@ export async function sendTransferEmail(opts: {
           <li>Start the journey to continue the delivery</li>
         </ol>
         <p style="margin-top:20px;">
-          <a href="${APP_URL}/driver/shipments" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;font-weight:bold;">
+          <a href="${appUrl()}/driver/shipments" style="background:#E85D04;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;font-weight:bold;">
             Open My Shipments
           </a>
         </p>
