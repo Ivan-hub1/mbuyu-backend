@@ -54,6 +54,21 @@ export async function sendMail(
   return true;
 }
 
+/** Run an email send and report the outcome to the admin UI instead of throwing. */
+export async function trySendEmail(
+  send: () => Promise<boolean>
+): Promise<{ emailSent: boolean; emailError: string | null }> {
+  try {
+    const sent = await send();
+    return sent
+      ? { emailSent: true, emailError: null }
+      : { emailSent: false, emailError: 'Email is not configured on the server (SMTP).' };
+  } catch (e) {
+    console.error('[email] send failed', e);
+    return { emailSent: false, emailError: 'Email failed to send — changes were saved.' };
+  }
+}
+
 function formatMoney(amount: number, currency?: string | null) {
   return `${currency || 'USD'} ${amount.toLocaleString('en-US', {
     minimumFractionDigits: 2,

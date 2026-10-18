@@ -8,6 +8,7 @@ import {
   sendQuoteResponseEmail,
   sendQuoteRejectedEmail,
   sendQuoteAcceptedEmail,
+  trySendEmail,
 } from '../lib/email';
 import { generateQuotePdf } from '../lib/quotePdf';
 import { currentBrand } from '../lib/brand';
@@ -38,21 +39,6 @@ function numOrStrToBlankString(
   if (v === null) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
-}
-
-/** Run an email send and report the outcome to the admin UI instead of throwing. */
-async function trySendEmail(
-  send: () => Promise<boolean>
-): Promise<{ emailSent: boolean; emailError: string | null }> {
-  try {
-    const sent = await send();
-    return sent
-      ? { emailSent: true, emailError: null }
-      : { emailSent: false, emailError: 'Email is not configured on the server (SMTP).' };
-  } catch (e) {
-    console.error('[quotes] email failed', e);
-    return { emailSent: false, emailError: 'Email failed to send — changes were saved.' };
-  }
 }
 
 // ─── Validation ────────────────────────────────────────────
