@@ -312,7 +312,7 @@ router.post(
 );
 
 // ═══════════════════════════════════════════════════════════
-// START JOURNEY
+// START JOURNEY (WITH ACTIVE JOURNEY CHECK)
 // ═══════════════════════════════════════════════════════════
 
 router.post(
@@ -329,6 +329,23 @@ router.post(
         return;
       }
       const data = parsed.data;
+      const driverId = req.user!.userId;
+
+      // ─── NEW: Block if driver already has an active journey ───
+      const activeJourney = await prisma.journey.findFirst({
+        where: {
+          driverId: driverId,
+          status: 'IN_TRANSIT',
+        },
+      });
+
+      if (activeJourney) {
+        res.status(400).json({
+          error: 'You already have an active trip. Please end or pause your current journey before starting a new one.',
+        });
+        return;
+      }
+      // ──────────────────────────────────────────────────────────
 
       const checklist = await prisma.checklist.findUnique({
         where: { id: data.checklistId },
@@ -337,7 +354,7 @@ router.post(
         res.status(404).json({ error: 'Checklist not found' });
         return;
       }
-      if (checklist.driverId !== req.user!.userId) {
+      if (checklist.driverId !== driverId) {
         res.status(403).json({ error: 'This checklist belongs to another driver' });
         return;
       }
@@ -359,7 +376,7 @@ router.post(
           res.status(404).json({ error: 'Shipment not found' });
           return;
         }
-        if (shipment.assignedToId !== req.user!.userId) {
+        if (shipment.assignedToId !== driverId) {
           res.status(403).json({ error: 'This shipment is not assigned to you' });
           return;
         }
@@ -369,7 +386,7 @@ router.post(
 
       const journey = await prisma.journey.create({
         data: {
-          driverId: req.user!.userId,
+          driverId: driverId,
           vehicleId: data.vehicleId,
           checklistId: data.checklistId,
           shipmentId: data.shipmentId || null,
@@ -383,7 +400,7 @@ router.post(
               lng: data.lng,
               locationName: data.locationName || null,
               note: 'Journey has started',
-              createdById: req.user!.userId,
+              createdById: driverId,
             },
           },
         },
@@ -402,7 +419,7 @@ router.post(
             status: 'PICKED_UP',
             location: coords,
             note: 'Journey has started',
-            createdById: req.user!.userId,
+            createdById: driverId,
           },
         });
         await prisma.shipment.update({
@@ -424,9 +441,7 @@ router.post(
   }
 );
 
-// ═══════════════════════════════════════════════════════════
-// EVENTS
-// ═══════════════════════════════════════════════════════════
+// ─── OTHER ENDPOINTS REMAIN EXACTLY THE SAME ───────────────
 
 router.post(
   '/:id/events',
@@ -602,10 +617,6 @@ router.post(
   }
 );
 
-// ═══════════════════════════════════════════════════════════
-// LIVE FEED
-// ═══════════════════════════════════════════════════════════
-
 router.get(
   '/live',
   requireStaffRole('OPERATIONS', 'HEAD_OFFICE'),
@@ -671,10 +682,6 @@ router.get(
     }
   }
 );
-
-// ═══════════════════════════════════════════════════════════
-// OTHER
-// ═══════════════════════════════════════════════════════════
 
 router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
   try {
